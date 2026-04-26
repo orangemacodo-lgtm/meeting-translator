@@ -496,3 +496,216 @@
     r.continuous = true;
     r.interimResults = true;
 
+    r.onresult = (e) => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const res = e.results[i];
+        if (res.isFinal) {
+          clearInterim();
+          if (res[0].transcript.trim()) addEntry(res[0].transcript);
+        } else {
+          interim += res[0].transcript;
+        }
+      }
+      if (interim) showInterim(interim);
+    };
+
+    r.onerror = (e) => {
+      console.warn('SR error', e);
+      if (e.error === 'no-speech') return;
+      if (e.error === 'language-not-supported') {
+        showWarn(`此瀏覽器不支援所選語言（${r.lang}）。請改用「中文（繁體・台灣）」或英文。`);
+      } else if (e.error === 'not-allowed') {
+        showWarn('麥克風權限被拒絕。請至瀏覽器設定開啟麥克風權限。');
+      }
+    };
+
+    r.onend = () => {
+      if (state.isRecording && !state.isPaused) {
+        try { r.start(); } catch(_) {}
+      }
+    };
+
+    return r;
+  }
+
+  $('btnStart').addEventListener('click', () => {
+    if (!SR) return;
+    state.recognition = buildRecognition();
+    state.isRecording = true;
+    state.isPaused = false;
+    state.startTime = state.startTime || Date.now();
+    try { state.recognition.start(); } catch(_) {}
+    setStatus('live');
+    $('btnStart').disabled = true;
+    $('btnPause').disabled = false;
+    $('btnStop').disabled = false;
+    $('config').classList.remove('open');
+  });
+
+  $('btnPause').addEventListener('click', () => {
+    if (!state.recognition) return;
+    if (!state.isPaused) {
+      state.isPaused = true;
+      try { state.recognition.stop(); } catch(_) {}
+      setStatus('paused');
+      $('btnPause').textContent = '▶ 繼續';
+    } else {
+      state.isPaused = false;
+      try { state.recognition.start(); } catch(_) {}
+      setStatus('live');
+      $('btnPause').textContent = '⏸ 暫停';
+    }
+  });
+
+  $('btnStop').addEventListener('click', () => {
+    state.isRecording = false;
+    state.isPaused = false;
+    if (state.recognition) {
+      try { state.recognition.stop(); } catch(_) {}
+      state.recognition = null;
+    }
+    clearInterim();
+    setStatus(null);
+    $('btnStart').disabled = false;
+    $('btnStart').textContent = '▶ 重新開始';
+    $('btnPause').disabled = true;
+    $('btnStop').disabled = true;
+    $('btnPause').textContent = '⏸ 暫停';
+  });
+
+  // === Export modal ===
+  $('btnExport').addEventListener('click', () => {
+    $('exportModal').classList.remove('hide');
+  });
+  document.querySelectorAll('#exportModal .opt').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const fmt = btn.dataset.fmt;
+      $('exportModal').classList.add('hide');
+      if (fmt === 'cancel') return;
+      if (fmt === 'clear') return doClear();
+      if (fmt === 'copy') return doCopy();
+      doExport(fmt);
+    });
+  });
+
+  function safeTitle() {
+    return ($('meetingTitle').value || 'meeting').replace(/[^\w一-龥\-]/g,'_');
+  }
+  function buildText(format) {
+    const title = $('meetingTitle').value || '會議紀錄';
+    const date = new Date().toLocaleString();
+    const targets = [...state.targets].map(c=>LANG_LABEL[c]||c).join('、');
+    if (format === 'md') {
+      let out = `# ${title}\n\n`;
+      out += `**日期**：${date}  \n**語音語言**：${$('srcLang').value}  \n**翻譯語言**：${targets}\n\n---\n\n`;
+      state.entries.forEach(e => {
+        out += `### [${e.elapsed}] ${e.time}\n\n**原文**：${e.original}\n\n`;
+        Object.entries(e.translations).forEach(([k,v]) => out += `- **${LANG_LABEL[k]||k}**：${v}\n`);
+        out += `\n`;
+      });
+      return out;
+    }
+    if (format === 'html') {
+      let body = `<h1>${title}</h1><p><b>日期：</b>${date}<br><b>語音語言：</b>${$('srcLang').value}<br><b>翻譯語言：</b>${targets}</p><hr>`;
+      state.entries.forEach(e => {
+        body += `<div style="margin-bottom:16px;padding:10px;border-left:3px solid #38bdf8;background:#f1f5f9;">`;
+        body += `<div style="font-size:11px;color:#64748b;font-family:monospace">[${e.elapsed}] ${e.time}</div>`;
+        body += `<div style="font-size:16px;margin:6px 0">${escapeHtml(e.original)}</div>`;
+        Object.entries(e.translations).forEach(([k,v]) =>
+          body += `<div style="font-size:14px;color:#475569"><b>${LANG_LABEL[k]||k}：</b>${escapeHtml(v)}</div>`);
+        body += `</div>`;
+      });
+      return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title><style>body{font-family:-apple-system,sans-serif;max-width:780px;margin:40px auto;padding:0 16px;color:#0f172a}</style></head><body>${body}</body></html>`;
+    }
+    let out = `${title}\n日期：${date}\n語音語言：${$('srcLang').value}\n翻譯語言：${targets}\n${'='.repeat(60)}\n\n`;
+    state.entries.forEach(e => {
+      out += `[${e.elapsed}] ${e.time}\n原文：${e.original}\n`;
+      Object.entries(e.translations).forEach(([k,v]) => out += `${LANG_LABEL[k]||k}：${v}\n`);
+      out += `\n`;
+    });
+    return out;
+  }
+  function doExport(fmt) {
+    if (!state.entries.length) { alert('還沒有任何紀錄可以匯出'); return; }
+    const content = buildText(fmt);
+    const mime = fmt === 'html' ? 'text/html' : 'text/plain';
+    const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${safeTitle()}.${fmt}`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+  async function doCopy() {
+    if (!state.entries.length) { alert('還沒有任何紀錄'); return; }
+    try {
+      await navigator.clipboard.writeText(buildText('txt'));
+      alert('✓ 已複製到剪貼簿');
+    } catch(e) { alert('複製失敗：' + e.message); }
+  }
+  function doClear() {
+    if (state.entries.length && !confirm('確定清空所有紀錄？')) return;
+    state.entries = [];
+    state.startTime = null;
+    document.querySelectorAll('#transcript .entry, #transcript .interim').forEach(n => n.remove());
+    if (!$('emptyState')) {
+      const e = document.createElement('div');
+      e.id = 'emptyState'; e.className = 'empty';
+      e.innerHTML = '<div class="icon-big">🎤</div><h2>已清空</h2><p>點下方「開始錄音」重新開始。</p>';
+      $('transcript').appendChild(e);
+    }
+  }
+
+  $('srcLang').addEventListener('change', () => {
+    if (state.recognition) {
+      state.recognition.lang = $('srcLang').value;
+      try { state.recognition.stop(); } catch(_) {}
+    }
+  });
+
+  // === PWA install prompt ===
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    state.deferredPrompt = e;
+    $('installBanner').classList.remove('hide');
+  });
+  $('btnInstall').addEventListener('click', async () => {
+    if (!state.deferredPrompt) return;
+    state.deferredPrompt.prompt();
+    await state.deferredPrompt.userChoice;
+    state.deferredPrompt = null;
+    $('installBanner').classList.add('hide');
+  });
+  $('btnInstallClose').addEventListener('click', () => {
+    $('installBanner').classList.add('hide');
+  });
+
+  // === Service worker ===
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW reg failed', err));
+    });
+  }
+
+  // === Wake lock to prevent screen sleeping during recording ===
+  let wakeLock = null;
+  async function requestWakeLock() {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLock = await navigator.wakeLock.request('screen');
+      }
+    } catch(_) {}
+  }
+  function releaseWakeLock() {
+    if (wakeLock) { wakeLock.release().catch(()=>{}); wakeLock = null; }
+  }
+  $('btnStart').addEventListener('click', requestWakeLock);
+  $('btnStop').addEventListener('click', releaseWakeLock);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && state.isRecording) requestWakeLock();
+  });
+})();
+</script>
+</body>
+</html>
