@@ -345,3 +345,154 @@
   </div>
 </div>
 
+<script>
+(function(){
+  const $ = (id) => document.getElementById(id);
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  const state = {
+    recognition: null,
+    isRecording: false,
+    isPaused: false,
+    entries: [],
+    targets: new Set(['en']),
+    interimEl: null,
+    startTime: null,
+    deferredPrompt: null,
+  };
+
+  if (!SR) {
+    showWarn('您的瀏覽器不支援語音辨識。請改用 Chrome、Edge 或 iOS 14.5+ Safari。');
+    $('btnStart').disabled = true;
+  }
+
+  // === Default chip selection ===
+  document.querySelectorAll('#targetChips .chip').forEach(chip => {
+    if (state.targets.has(chip.dataset.code)) chip.classList.add('active');
+    chip.addEventListener('click', () => {
+      const code = chip.dataset.code;
+      if (state.targets.has(code)) {
+        state.targets.delete(code);
+        chip.classList.remove('active');
+      } else {
+        state.targets.add(code);
+        chip.classList.add('active');
+      }
+    });
+  });
+
+  $('meetingTitle').value = `會議紀錄 ${new Date().toISOString().slice(0,10)}`;
+
+  // === Settings toggle ===
+  $('btnSettings').addEventListener('click', () => {
+    $('config').classList.toggle('open');
+  });
+
+  // === Helpers ===
+  function showWarn(msg) {
+    const box = $('warnBox');
+    box.textContent = '⚠️ ' + msg;
+    box.classList.remove('hide');
+  }
+  function setStatus(mode) {
+    const dot = $('statusDot');
+    dot.classList.remove('live', 'paused');
+    if (mode === 'live') dot.classList.add('live');
+    else if (mode === 'paused') dot.classList.add('paused');
+  }
+  function timeStamp() {
+    return new Date().toTimeString().slice(0,8);
+  }
+  function elapsedStamp() {
+    if (!state.startTime) return '00:00:00';
+    const ms = Date.now() - state.startTime;
+    const s = Math.floor(ms/1000);
+    const hh = String(Math.floor(s/3600)).padStart(2,'0');
+    const mm = String(Math.floor((s%3600)/60)).padStart(2,'0');
+    const ss = String(s%60).padStart(2,'0');
+    return `${hh}:${mm}:${ss}`;
+  }
+  function ensureEmptyHidden() {
+    const e = $('emptyState'); if (e) e.remove();
+  }
+  function escapeHtml(s){
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  async function translate(text, srcLang, targetLang) {
+    try {
+      const src = srcLang.split('-')[0];
+      const srcSafe = (src === 'nan') ? 'zh' : src;
+      if (srcSafe === targetLang.split('-')[0] && srcSafe !== 'zh') return text;
+      const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${encodeURIComponent(srcSafe)}|${encodeURIComponent(targetLang)}`;
+      const r = await fetch(url);
+      const j = await r.json();
+      return (j && j.responseData && j.responseData.translatedText) || '[翻譯失敗]';
+    } catch (e) {
+      console.error(e);
+      return '[翻譯錯誤]';
+    }
+  }
+
+  const LANG_LABEL = {
+    'zh-TW': '繁中', 'zh-CN': '簡中', 'en': '英', 'ja': '日',
+    'ko': '韓', 'es': '西', 'fr': '法', 'de': '德'
+  };
+
+  function addEntry(originalText) {
+    ensureEmptyHidden();
+    const entry = {
+      time: timeStamp(),
+      elapsed: elapsedStamp(),
+      original: originalText.trim(),
+      translations: {}
+    };
+    state.entries.push(entry);
+
+    const div = document.createElement('div');
+    div.className = 'entry';
+    div.innerHTML = `
+      <div class="time">[${entry.elapsed}] ${entry.time}</div>
+      <div class="original">${escapeHtml(entry.original)}</div>
+      <div class="translations"></div>
+    `;
+    $('transcript').appendChild(div);
+    div.scrollIntoView({ behavior: 'smooth', block: 'end' });
+
+    const trBox = div.querySelector('.translations');
+    const srcLang = $('srcLang').value;
+    state.targets.forEach(async (tgt) => {
+      const line = document.createElement('div');
+      line.className = 'tr-line';
+      line.innerHTML = `<span class="lang">${LANG_LABEL[tgt]||tgt}</span><span class="tr-text">翻譯中…</span>`;
+      trBox.appendChild(line);
+      const result = await translate(entry.original, srcLang, tgt);
+      entry.translations[tgt] = result;
+      line.querySelector('.tr-text').textContent = result;
+    });
+  }
+
+  function showInterim(text) {
+    if (!text.trim()) {
+      if (state.interimEl) { state.interimEl.remove(); state.interimEl = null; }
+      return;
+    }
+    if (!state.interimEl) {
+      state.interimEl = document.createElement('div');
+      state.interimEl.className = 'interim';
+      $('transcript').appendChild(state.interimEl);
+    }
+    state.interimEl.textContent = '… ' + text;
+    state.interimEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }
+
+  function clearInterim() {
+    if (state.interimEl) { state.interimEl.remove(); state.interimEl = null; }
+  }
+
+  function buildRecognition() {
+    const r = new SR();
+    r.lang = $('srcLang').value;
+    r.continuous = true;
+    r.interimResults = true;
+
