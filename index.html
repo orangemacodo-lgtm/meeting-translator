@@ -1112,6 +1112,58 @@ function fmtBytes(b) {
   return b < 1048576 ? (b/1024).toFixed(1)+' KB' : (b/1048576).toFixed(1)+' MB';
 }
 
+// 備用解碼：用 HTMLAudioElement 處理 WebM/Opus（Android decodeAudioData 不支援時）
+function decodeAudioViaElement(file, gain, onProgress) {
+  return new Promise(function(resolve, reject) {
+    var url = URL.createObjectURL(file);
+    var audio = new Audio();
+    audio.preload = 'auto';
+    var ctx, processor, gainNode, source;
+    var buffers = [];
+    var done = false;
+
+    function finish() {
+      if (done) return;
+      done = true;
+      try { if (processor) processor.disconnect(); } catch(e) {}
+      try { if (gainNode) gainNode.disconnect(); } catch(e) {}
+      try { if (source) source.disconnect(); } catch(e) {}
+      if (ctx) ctx.close();
+      URL.revokeObjectURL(url);
+      var total = buffers.reduce(function(a, b) { return a + b.length; }, 0);
+      var result = new Float32Array(total);
+      var offset = 0;
+      buffers.forEach(function(b) { result.set(b, offset); offset += b.length; });
+      // 限幅
+      if (gain > 1) {
+        for (var i = 0; i < result.length; i++) result[i] = Math.max(-1, Math.min(1, result[i]));
+      }
+      resolve(result);
+    }
+
+    audio.oncanplay = function() {
+      try {
+        ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        gainNode = ctx.createGain();
+        gainNode.gain.value = gain;
+        processor = ctx.createScriptProcessor(8192, 1, 1);
+        source = ctx.createMediaElementSource(audio);
+        processor.onaudioprocess = function(e) {
+          buffers.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+          if (audio.duration && onProgress) onProgress(audio.currentTime / audio.duration);
+        };
+        source.connect(gainNode);
+        gainNode.connect(processor);
+        processor.connect(ctx.destination);
+        audio.play().catch(function(e) { reject(e); });
+      } catch(e) { URL.revokeObjectURL(url); reject(e); }
+    };
+    audio.onended = function() { finish(); };
+    audio.onerror = function() { URL.revokeObjectURL(url); reject(new Error('音檔格式不支援，請轉換為 MP3 或 WAV 後再試')); };
+    audio.src = url;
+  });
+}
+
 function doTranscribe() {
   if (!selectedFile) return;
   var btn = document.getElementById('btnTranscribe');
@@ -1163,25 +1215,39 @@ function doTranscribe() {
       pf.style.width = '85%';
       pt.textContent = '解碼音頻並轉錄中...';
 
-      return selectedFile.arrayBuffer().then(function(buf) {
-        var tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
-        return tmpCtx.decodeAudioData(buf).then(function(decoded) {
-          tmpCtx.close();
-          var TARGET = 16000;
-          var offCtx = new OfflineAudioContext(1, Math.ceil(decoded.duration * TARGET), TARGET);
-          var src = offCtx.createBufferSource();
-          src.buffer = decoded;
-          var gn = offCtx.createGain();
-          gn.gain.value = gain;
-          src.connect(gn);
-          gn.connect(offCtx.destination);
-          src.start(0);
-          return offCtx.startRendering();
-        }).then(function(resampled) {
-          var audioData = resampled.getChannelData(0);
-          if (gain > 1) {
-            audioData = Float32Array.from(audioData, function(v) { return Math.max(-1, Math.min(1, v)); });
-          }
+      // 解碼音頻為 Float32Array@16kHz（含備用路徑）
+      function decodeToFloat32() {
+        return selectedFile.arrayBuffer().then(function(buf) {
+          var tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
+          return tmpCtx.decodeAudioData(buf).then(function(decoded) {
+            tmpCtx.close();
+            var TARGET = 16000;
+            var offCtx = new OfflineAudioContext(1, Math.ceil(decoded.duration * TARGET), TARGET);
+            var src = offCtx.createBufferSource();
+            src.buffer = decoded;
+            var gn = offCtx.createGain();
+            gn.gain.value = gain;
+            src.connect(gn);
+            gn.connect(offCtx.destination);
+            src.start(0);
+            return offCtx.startRendering().then(function(r) {
+              var ad = r.getChannelData(0);
+              if (gain > 1) ad = Float32Array.from(ad, function(v) { return Math.max(-1, Math.min(1, v)); });
+              return ad;
+            });
+          }).catch(function() {
+            // decodeAudioData 失敗（常見於 Android + WebM/Opus）→ 備用解碼
+            tmpCtx.close();
+            pt.textContent = '備用解碼中，請稍候...';
+            return decodeAudioViaElement(selectedFile, gain, function(prog) {
+              pt.textContent = '解碼音訊 ' + Math.round(prog * 100) + '%...';
+              pf.style.width = (85 + prog * 4) + '%';
+            });
+          });
+        });
+      }
+
+      return decodeToFloat32().then(function(audioData) {
           pf.style.width = '90%';
           var opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true,
                        condition_on_previous_text: false,
@@ -1189,7 +1255,6 @@ function doTranscribe() {
           if (lang !== 'auto') opts.language = lang;
           else opts.language = 'zh';
           return transcriber(audioData, opts);
-        });
       }).then(function(result) {
         pf.style.width = '100%';
         pt.textContent = '轉錄完成！';
