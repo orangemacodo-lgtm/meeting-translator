@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>AI 會議記錄系統</title>
+<script src="https://cdn.jsdelivr.net/npm/franc@6.2.0/dist/franc.min.js"></script>
 <style>
 :root {
   --bg: #0d1117;
@@ -302,6 +303,10 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
     ⚠️ Android 裝置即時識別穩定性有限，7分鐘可能只抓到幾句。建議改用「Whisper 離線」獲得完整記錄。
   </div>
 
+  <div class="compat-banner" id="translateBanner" style="display:none;background:rgba(124,106,247,.1);border-color:rgba(124,106,247,.3);color:var(--text);">
+    🌐 自動翻譯已啟用 · 使用 LibreTranslate 免費服務 · 翻譯結果會以「→」標記顯示在原文下方 · 若翻譯服務不可用，將自動禁用
+  </div>
+
   <div class="ctrl-row" id="liveLangRow">
     <div class="ctrl-group">
       <div class="ctrl-label">🌐 識別語言</div>
@@ -408,6 +413,10 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
       <input type="checkbox" id="chkSaveAudio" checked />
       <span class="opt-label">同時錄製音檔</span>
     </label>
+    <label class="opt-item">
+      <input type="checkbox" id="chkAutoTranslate" />
+      <span class="opt-label">🌐 自動翻譯</span>
+    </label>
   </div>
 
   <!-- 音檔結果區 -->
@@ -485,6 +494,13 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
     <div class="prog-bg"><div class="prog-fill" id="progFill"></div></div>
   </div>
 
+  <div class="opt-row" style="margin-bottom:10px">
+    <label class="opt-item">
+      <input type="checkbox" id="chkAutoTranslate" />
+      <span class="opt-label">🌐 自動翻譯</span>
+    </label>
+  </div>
+
   <button class="btn-act primary" id="btnTranscribe" onclick="doTranscribe()" style="width:100%;margin-top:12px" disabled>
     ✨ 開始轉錄
   </button>
@@ -536,6 +552,12 @@ var wakeLock = null;
 var wasRecInBackground = false;
 var chunkInterval = null, chunkCount = 0, activeMime = '';
 
+// 🌐 翻譯相關
+var translationCache = {}; // 翻譯快取 {text: translation}
+var translateApiUrl = 'https://libretranslate.de/translate';
+var translateFailCount = 0; // API 失敗計數
+var lastDetectedLang = 'zh'; // 上次檢測的語言
+
 // ──────────────────────────────────────────────
 // Init
 // ──────────────────────────────────────────────
@@ -545,10 +567,20 @@ window.addEventListener('DOMContentLoaded', function() {
   setupDnD();
   setupSliders();
   setupTranscript();
+  setupTranslationToggle();
   // 預設 Whisper 模式（若 checkCompat 尚未切換）
   if (recMode !== 'live') setRecMode('whisper');
   // 背景預載 Whisper 模型（延遲 3 秒避免阻塞頁面渲染）
   setTimeout(function() { preloadWhisperModel(); }, 3000);
+  // 檢查 LibreTranslate API 連線
+  console.log('[初始化] 檢查翻譯服務...');
+  fetch(translateApiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q: '測試', source: 'zh', target: 'en' }),
+    signal: AbortSignal.timeout(5000) // 5秒超時
+  }).then(function(r) { console.log('[翻譯服務] ✅ 可用'); })
+    .catch(function(e) { console.warn('[翻譯服務] ⚠️ 不可用:', e.message); });
 });
 
 function setDate() {
@@ -741,6 +773,82 @@ function enhanceAudio(audioData) {
   return filtered;
 }
 
+// 🌐 語言檢測函數
+function detectLanguage(text) {
+  if (!text || text.trim().length < 4) return 'mixed';
+  try {
+    if (typeof franc !== 'undefined') {
+      var result = franc(text, { only: ['cmn', 'eng', 'jpn', 'kor'] }); // 主要語言
+      // franc 返回格式: 'cmn' (中文), 'eng' (英文), 等
+      if (result === 'cmn' || result.startsWith('zh')) return 'zh';
+      if (result === 'eng') return 'en';
+      if (result === 'jpn') return 'ja';
+      if (result === 'kor') return 'ko';
+
+      // 混合檢測：計算中英文字符比例
+      var zhCount = (text.match(/[一-鿿]/g) || []).length;
+      var enCount = (text.match(/[a-zA-Z]+/g) || []).length;
+      var total = zhCount + enCount;
+      if (total === 0) return 'mixed';
+      var zhRatio = zhCount / total;
+
+      if (zhRatio > 0.7) return 'zh';
+      if (zhRatio < 0.3) return 'en';
+      return 'mixed';
+    }
+  } catch(e) {
+    console.warn('[語言檢測] franc 錯誤:', e);
+  }
+  return 'mixed';
+}
+
+// 🌐 翻譯文本函數
+function translateText(text, targetLang) {
+  if (!text || text.trim().length < 2) return Promise.resolve(null);
+
+  // 檢查快取
+  var cacheKey = text.trim() + '_' + targetLang;
+  if (translationCache[cacheKey]) {
+    console.log('[翻譯快取] 命中:', text.substring(0, 30));
+    return Promise.resolve(translationCache[cacheKey]);
+  }
+
+  // API 失敗超過 3 次則放棄
+  if (translateFailCount > 3) {
+    console.warn('[翻譯] API 連續失敗 >3 次，自動禁用');
+    return Promise.resolve(null);
+  }
+
+  return fetch(translateApiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      q: text.trim(),
+      source: 'auto', // 自動檢測源語言
+      target: targetLang
+    })
+  }).then(function(res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }).then(function(data) {
+    var translated = data.translatedText || null;
+    if (translated) {
+      translationCache[cacheKey] = translated;
+      translateFailCount = 0; // 成功則重置
+      console.log('[翻譯] 成功 ->', translated.substring(0, 30));
+      return translated;
+    }
+    return null;
+  }).catch(function(err) {
+    translateFailCount++;
+    console.warn('[翻譯 API 錯誤]', err.message, '(失敗 ' + translateFailCount + '次)');
+    if (translateFailCount <= 2) {
+      toast('⚠️ 翻譯服務暫時不可用，繼續記錄中...', 2000);
+    }
+    return null;
+  });
+}
+
 function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
   retryCount = retryCount || 0;
   var prog = document.getElementById('liveWhisperProg');
@@ -809,7 +917,33 @@ function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
     }
 
     var ts = document.getElementById('chkTimestamp').checked ? '[' + fmt(elapsed) + '] ' : '';
-    finalTx += ts + out + '\n';
+    var displayText = ts + out + '\n';
+
+    // 🌐 如果啟用自動翻譯，加翻譯版本
+    if (document.getElementById('chkAutoTranslate').checked) {
+      var detectedLang = detectLanguage(out);
+      lastDetectedLang = detectedLang;
+      console.log('[檢測] 語言:', detectedLang, '文本:', out.substring(0, 30));
+
+      var targetLang = detectedLang === 'zh' ? 'en' : 'zh'; // 反向翻譯
+      if (detectedLang !== 'mixed') {
+        pt.textContent = '🌐 ' + segLabel + ' 翻譯中...';
+        translateText(out, targetLang).then(function(translated) {
+          if (translated) {
+            // 加翻譯到記錄（淡灰色顯示）
+            displayText += '  → ' + translated + '\n';
+            console.log('[翻譯結果]', displayText);
+          }
+          finalTx += displayText;
+          syncTx();
+          pt.textContent = '✅ ' + segLabel + ' 完成';
+          setTimeout(function() { prog.classList.remove('show'); }, 1500);
+        });
+        return;
+      }
+    }
+
+    finalTx += displayText;
     syncTx();
     pt.textContent = '✅ ' + segLabel + ' 完成';
     setTimeout(function() { prog.classList.remove('show'); }, 2000);
@@ -820,19 +954,38 @@ function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
     }
   }).catch(function(err) {
     console.error('[轉錄錯誤]', segLabel, '錯誤訊息:', err.message || err);
-    console.log('[調試] blob大小:', blob.size, 'retryCount:', retryCount);
+    console.log('[調試]', {
+      blobSize: blob.size,
+      blobType: activeMime,
+      retryCount: retryCount,
+      modelId: document.getElementById('liveWhisperModel').value,
+      errorName: err.name,
+      errorCode: err.code
+    });
 
-    // 第二段常因 blob 太小或格式問題而失敗，嘗試重試
+    // OrtRun 錯誤 (error code 6) 通常是張量形狀問題
+    var isOrtError = err.message && err.message.indexOf('OrtRun') > -1;
+
+    // 其他可重試的錯誤
     var isRetryableError = err.message && (
       err.message.indexOf('shape') > -1 ||
       err.message.indexOf('dimension') > -1 ||
       err.message.indexOf('size') > -1
     );
 
-    if (isRetryableError && retryCount < 2) {
+    if (isOrtError) {
+      console.warn('[OrtRun 警告] 模型張量形狀不匹配 - blob太小或音訊有問題');
+      pt.textContent = '⚠️ ' + segLabel + '：音訊處理失敗，已略過';
+      toast('⚠️ 音訊處理失敗，請調高麥克風增益', 3000);
+      pf.style.width = '0%';
+      setTimeout(function() { prog.classList.remove('show'); }, 2000);
+      return;
+    }
+
+    if (isRetryableError && retryCount < 1) {
       retryCount++;
-      pt.textContent = '⚠️ ' + segLabel + ' 重試 (' + retryCount + '/2)...';
-      console.log('[重試]', segLabel, '第', retryCount, '次');
+      pt.textContent = '⚠️ ' + segLabel + ' 重試中...';
+      console.log('[重試]', segLabel);
       setTimeout(function() { transcribeBlob(blob, pipe, segLabel, isFinal, retryCount); }, 1200);
       return;
     }
@@ -843,7 +996,7 @@ function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
       console.log('[略過]', segLabel, '音訊太短');
     } else {
       pt.textContent = '⚠️ ' + segLabel + '：轉錄失敗，已略過';
-      toast('⚠️ ' + segLabel + ' 轉錄失敗，可能是音訊品質問題', 4000);
+      toast('⚠️ ' + segLabel + ' 轉錄失敗', 3000);
     }
     pf.style.width = '0%';
     setTimeout(function() { prog.classList.remove('show'); }, 2000);
@@ -899,21 +1052,25 @@ function startWhisperRec() {
     setStatus('rec', '模型載入中，請稍候...');
 
     loadWhisperPipeline(modelId, pf, pt).then(function(pipe) {
-      setStatus('rec', '✅ 錄音中，每5秒自動轉錄...');
-      pt.textContent = '✅ 模型就緒，邊錄邊轉（每5秒一段）';
+      setStatus('rec', '✅ 錄音中，每10秒自動轉錄...');
+      pt.textContent = '✅ 模型就緒，邊錄邊轉（每10秒一段）';
       pf.style.width = '100%';
-      console.log('[Whisper] 開始即時轉錄，間隔: 5秒');
+      console.log('[Whisper] 開始即時轉錄，間隔: 10秒');
       setTimeout(function() { document.getElementById('liveWhisperProg').classList.remove('show'); }, 2000);
 
-      // 每5秒自動切段轉錄（更即時的反應）
+      // 每10秒自動切段轉錄（平衡即時性和穩定性）
       chunkInterval = setInterval(function() {
         if (!isRec || isPaused || audioChunks.length === 0) return;
         chunkCount++;
         var batch = audioChunks.splice(0); // 取走目前所有 chunks，清空陣列
         var blob = new Blob(batch, { type: activeMime || 'audio/webm' });
         console.log('[轉錄] 第' + chunkCount + '段，blob大小:', blob.size, '位元組');
+        if (blob.size < 5000) {
+          console.log('[略過] blob太小，累積更多數據');
+          return;
+        }
         transcribeBlob(blob, pipe, '第' + chunkCount + '段', false);
-      }, 5000);
+      }, 10000);
 
     }).catch(function(err) {
       setStatus('', '❌ 模型載入失敗：' + err.message);
@@ -1166,8 +1323,12 @@ function togglePause() {
         var batch = audioChunks.splice(0);
         var blob = new Blob(batch, { type: activeMime || 'audio/webm' });
         console.log('[轉錄] 第' + chunkCount + '段，blob大小:', blob.size, '位元組');
+        if (blob.size < 5000) {
+          console.log('[略過] blob太小，累積更多數據');
+          return;
+        }
         transcribeBlob(blob, pipe, '第' + chunkCount + '段', false);
-      }, 5000);
+      }, 10000);
       console.log('[暫停] 已恢復 Whisper 轉錄計時器');
     }
     console.log('[暫停] 已繼續錄音');
@@ -1233,6 +1394,19 @@ function setStatus(type, txt) {
 
 function setupTranscript() {
   document.getElementById('transcript').addEventListener('input', updateWC);
+}
+
+function setupTranslationToggle() {
+  var chk = document.getElementById('chkAutoTranslate');
+  var banner = document.getElementById('translateBanner');
+  if (!chk || !banner) return;
+  chk.addEventListener('change', function() {
+    banner.style.display = chk.checked ? 'block' : 'none';
+    if (chk.checked) {
+      console.log('[翻譯] 自動翻譯已啟用');
+      toast('🌐 自動翻譯已啟用', 2000);
+    }
+  });
 }
 
 function syncTx() {
@@ -1465,15 +1639,53 @@ function doTranscribe() {
         }
 
         var out = '\n── 檔案轉錄：' + selectedFile.name + ' ──\n';
-        filtered.forEach(function(c) { out += c.ts + c.text + '\n'; });
+        var autoTranslate = document.getElementById('chkAutoTranslate').checked;
+        var translationPromises = [];
 
+        filtered.forEach(function(c) {
+          var text = c.ts + c.text;
+          out += text + '\n';
+
+          // 🌐 如果啟用自動翻譯，準備翻譯任務
+          if (autoTranslate) {
+            var detectedLang = detectLanguage(c.text);
+            var targetLang = detectedLang === 'zh' ? 'en' : 'zh';
+            if (detectedLang !== 'mixed' && c.text.trim().length > 2) {
+              translationPromises.push(
+                translateText(c.text, targetLang).then(function(translated) {
+                  if (translated) {
+                    out += '  → ' + translated + '\n';
+                  }
+                })
+              );
+            }
+          }
+        });
+
+        // 等待所有翻譯完成
+        if (translationPromises.length > 0) {
+          Promise.all(translationPromises).then(function() {
+            var ta = document.getElementById('transcript');
+            ta.value = (ta.value ? ta.value + '\n' : '') + out;
+            finalTx = ta.value;
+            ta.scrollTop = ta.scrollHeight;
+            updateWC();
+            toast('轉錄 + 翻譯完成！');
+            setTimeout(function() { pw.classList.remove('show'); }, 3000);
+          });
+          return;
+        }
+
+        // 無翻譯或翻譯流程會自己顯示結果
         var ta = document.getElementById('transcript');
         ta.value = (ta.value ? ta.value + '\n' : '') + out;
         finalTx = ta.value;
         ta.scrollTop = ta.scrollHeight;
         updateWC();
-        toast('轉錄完成！');
-        setTimeout(function() { pw.classList.remove('show'); }, 3000);
+        if (!autoTranslate) {
+          toast('轉錄完成！');
+          setTimeout(function() { pw.classList.remove('show'); }, 3000);
+        }
       });
     });
 
