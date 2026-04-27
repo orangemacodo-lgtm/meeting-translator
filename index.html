@@ -703,7 +703,8 @@ function loadWhisperPipeline(modelId, pf, pt) {
   });
 }
 
-function transcribeBlob(blob, pipe, segLabel, isFinal) {
+function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
+  retryCount = retryCount || 0;
   var prog = document.getElementById('liveWhisperProg');
   var pf = document.getElementById('liveProgFill');
   var pt = document.getElementById('liveProgText');
@@ -774,10 +775,17 @@ function transcribeBlob(blob, pipe, segLabel, isFinal) {
       elapsed = 0; document.getElementById('timer').textContent = '00:00';
     }
   }).catch(function(err) {
-    pt.textContent = '❌ ' + segLabel + '：' + err.message;
+    console.error('轉錄錯誤：', err);
+    // 第二段常因 blob 太小或格式問題而失敗，嘗試重試
+    if (err.message && err.message.indexOf('shape') > -1 && retryCount < 2) {
+      retryCount++;
+      pt.textContent = '⚠️ ' + segLabel + ' 重試 (' + retryCount + '/2)...';
+      setTimeout(function() { transcribeBlob(blob, pipe, segLabel, isFinal, retryCount); }, 1000);
+      return;
+    }
+    pt.textContent = '⚠️ ' + segLabel + '：轉錄失敗，已略過';
     pf.style.width = '0%';
-    console.error(err);
-    setTimeout(function() { prog.classList.remove('show'); }, 3000);
+    setTimeout(function() { prog.classList.remove('show'); }, 2000);
   });
 }
 
@@ -897,6 +905,7 @@ function startRec() {
 
   var restartCount = 0;
   var lastFinalTx = ''; // 防重複：記錄上一句已加入的文字
+  var hasDetectedSpeech = false; // 診斷：是否偵測到任何語音
 
   function buildRecognition() {
     var r = new SR();
@@ -907,10 +916,11 @@ function startRec() {
 
     r.onstart = function() {
       restartCount = 0;
-      setStatus('rec', '錄音中，正在識別...');
+      setStatus('rec', '🎤 錄音中，正在識別... (如長時間無文字，可能是麥克風問題)');
     };
 
     r.onresult = function(e) {
+      hasDetectedSpeech = true; // 已偵測到語音事件
       restartCount = 0; // 成功識別後重置重試計數
       for (var i = e.resultIndex; i < e.results.length; i++) {
         if (!e.results[i].isFinal) continue;
@@ -930,7 +940,13 @@ function startRec() {
 
     r.onerror = function(e) {
       if (e.error === 'aborted') return;
-      if (e.error === 'no-speech') return;
+      if (e.error === 'no-speech') {
+        // 無語音偵測到 - 可能是麥克風問題
+        if (!hasDetectedSpeech && elapsed > 10000) { // 10秒內未偵測到任何聲音
+          setStatus('rec', '⚠️ 未偵測到麥克風聲音（請檢查麥克風、音量、隱私權限）');
+        }
+        return;
+      }
       if (e.error === 'network') { setStatus('rec', '⚠️ 網路不穩，重試中...'); return; }
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
         setStatus('', '❌ 麥克風權限被拒絕，請在瀏覽器設定允許');
