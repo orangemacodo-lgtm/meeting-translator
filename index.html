@@ -222,6 +222,21 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
 }
 .compat-banner.show{display:block}
 
+/* ---- Audio Result ---- */
+#audioResult{
+  display:none;margin-top:10px;background:rgba(63,185,80,.07);
+  border:1px solid rgba(63,185,80,.25);border-radius:var(--r-sm);padding:10px 12px;
+}
+#audioResult.show{display:block}
+.ar-label{font-size:0.78rem;color:var(--green);margin-bottom:6px;font-weight:500}
+.ar-player{width:100%;margin-bottom:8px;border-radius:var(--r-sm)}
+.btn-save-audio{
+  width:100%;padding:9px;border-radius:var(--r-sm);border:1px solid rgba(63,185,80,.4);
+  background:rgba(63,185,80,.1);color:var(--green);cursor:pointer;font-size:0.88rem;
+  font-weight:500;transition:all .18s;
+}
+.btn-save-audio:hover{background:rgba(63,185,80,.2)}
+
 /* ---- Responsive ---- */
 @media(max-width:480px){
   .btn-rec{width:58px;height:58px}
@@ -338,6 +353,17 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
       <input type="checkbox" id="chkSpeaker" />
       <span class="opt-label">標示發言輪次</span>
     </label>
+    <label class="opt-item">
+      <input type="checkbox" id="chkSaveAudio" checked />
+      <span class="opt-label">同時錄製音檔</span>
+    </label>
+  </div>
+
+  <!-- 音檔結果區 -->
+  <div id="audioResult">
+    <div class="ar-label">🎵 音檔已準備好</div>
+    <audio class="ar-player" id="arPlayer" controls></audio>
+    <button class="btn-save-audio" onclick="saveAudio()">⬇️ 下載音檔（WebM）</button>
   </div>
 </div>
 
@@ -453,6 +479,7 @@ let audioCtx = null, analyser = null, gainNode = null, animID = null, micStream 
 let finalTx = '', speakerIdx = 0;
 let selectedFile = null;
 let whisperCache = {};
+let mediaRecorder = null, audioChunks = [], lastAudioBlob = null;
 
 // ──────────────────────────────────────────────
 // Init
@@ -606,6 +633,19 @@ async function startRec() {
     }
   };
 
+  // 啟動 MediaRecorder 錄製音檔
+  if (document.getElementById('chkSaveAudio').checked && window.MediaRecorder) {
+    audioChunks = [];
+    lastAudioBlob = null;
+    document.getElementById('audioResult').classList.remove('show');
+    const mimeType = ['audio/webm;codecs=opus','audio/webm','audio/ogg'].find(t => MediaRecorder.isTypeSupported(t)) || '';
+    try {
+      mediaRecorder = new MediaRecorder(micStream, mimeType ? { mimeType } : {});
+      mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
+      mediaRecorder.start(1000);
+    } catch(e) { mediaRecorder = null; }
+  }
+
   recognition.start();
   isRec = true; isPaused = false;
   startTimer();
@@ -616,6 +656,24 @@ async function startRec() {
 function stopRec() {
   isRec = false; isPaused = false;
   if (recognition) { recognition.abort(); recognition = null; }
+
+  // 停止 MediaRecorder，產生音檔
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.onstop = () => {
+      if (audioChunks.length > 0) {
+        const mimeType = mediaRecorder.mimeType || 'audio/webm';
+        lastAudioBlob = new Blob(audioChunks, { type: mimeType });
+        const url = URL.createObjectURL(lastAudioBlob);
+        const player = document.getElementById('arPlayer');
+        player.src = url;
+        document.getElementById('audioResult').classList.add('show');
+        toast('🎵 音檔已準備好，可下載或試聽');
+      }
+    };
+    mediaRecorder.stop();
+    mediaRecorder = null;
+  }
+
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
   if (audioCtx) { audioCtx.close(); audioCtx = null; }
   gainNode = null; analyser = null;
@@ -632,12 +690,14 @@ function togglePause() {
   if (isPaused) {
     isPaused = false;
     try { recognition.start(); } catch(e) {}
+    if (mediaRecorder && mediaRecorder.state === 'paused') mediaRecorder.resume();
     startTimer();
     setStatus('rec', '錄音中...');
     document.getElementById('btnPause').textContent = '⏸ 暫停';
   } else {
     isPaused = true;
     recognition.abort();
+    if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.pause();
     stopTimer();
     setStatus('', '已暫停');
     document.getElementById('btnPause').textContent = '▶ 繼續';
@@ -914,6 +974,18 @@ function dl(text, name, type) {
   a.href = URL.createObjectURL(new Blob([text], {type}));
   a.download = name;
   a.click();
+}
+
+function saveAudio() {
+  if (!lastAudioBlob) { toast('尚無可儲存的音檔'); return; }
+  const title = document.getElementById('mtgTitle').value || '會議錄音';
+  const date = new Date().toISOString().slice(0,10);
+  const ext = lastAudioBlob.type.includes('ogg') ? 'ogg' : 'webm';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(lastAudioBlob);
+  a.download = `${title}_${date}.${ext}`;
+  a.click();
+  toast('✅ 音檔已下載');
 }
 
 // ──────────────────────────────────────────────
