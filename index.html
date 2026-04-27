@@ -529,7 +529,7 @@ var audioCtx = null, analyser = null, gainNode = null, animID = null, micStream 
 var finalTx = '', speakerIdx = 0;
 var selectedFile = null;
 var whisperCache = {};
-var mediaRecorder = null, audioChunks = [], lastAudioBlob = null;
+var mediaRecorder = null, audioChunks = [], allAudioChunks = [], lastAudioBlob = null;
 var recMode = 'whisper'; // 'live' | 'whisper'
 var wakeLock = null;
 var wasRecInBackground = false;
@@ -789,17 +789,20 @@ function startWhisperRec() {
     acquireWakeLock();
     micStream = stream;
     initAudio(stream);
-    audioChunks = []; lastAudioBlob = null; chunkCount = 0;
+    audioChunks = []; allAudioChunks = []; lastAudioBlob = null; chunkCount = 0;
     document.getElementById('audioResult').classList.remove('show');
 
-    var types = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'];
+    var isAndroidRec = /Android/i.test(navigator.userAgent);
+    var types = isAndroidRec
+      ? ['audio/mp4;codecs=mp4a.40.2','audio/mp4','audio/webm;codecs=opus','audio/webm']
+      : ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4;codecs=mp4a.40.2'];
     activeMime = '';
     for (var i = 0; i < types.length; i++) {
       if (window.MediaRecorder && MediaRecorder.isTypeSupported(types[i])) { activeMime = types[i]; break; }
     }
     try { mediaRecorder = new MediaRecorder(micStream, activeMime ? {mimeType: activeMime} : {}); }
     catch(e) { mediaRecorder = new MediaRecorder(micStream); activeMime = ''; }
-    mediaRecorder.ondataavailable = function(e) { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.ondataavailable = function(e) { if (e.data && e.data.size > 0) { audioChunks.push(e.data); allAudioChunks.push(e.data); } };
     mediaRecorder.start(500);
 
     isRec = true; startTimer(); uiRec(true);
@@ -858,8 +861,9 @@ function stopWhisperRec() {
     }
     chunkCount++;
     var blob = new Blob(audioChunks.splice(0), { type: activeMime || 'audio/webm' });
-    lastAudioBlob = blob;
-    document.getElementById('arPlayer').src = URL.createObjectURL(blob);
+    // 用完整錄音 allAudioChunks 存檔（避免只存最後一段殘缺 WebM）
+    lastAudioBlob = new Blob(allAudioChunks, { type: activeMime || 'audio/webm' });
+    document.getElementById('arPlayer').src = URL.createObjectURL(lastAudioBlob);
     document.getElementById('audioResult').classList.add('show');
     setStatus('', '轉錄最後一段中...');
     if (pipe) {
@@ -1354,7 +1358,8 @@ function saveAudio() {
   if (!lastAudioBlob) { toast('尚無可儲存的音檔'); return; }
   var title = document.getElementById('mtgTitle').value || '會議錄音';
   var date = new Date().toISOString().slice(0,10);
-  var ext = lastAudioBlob.type.includes('ogg') ? 'ogg' : 'webm';
+  var blobType = lastAudioBlob.type || '';
+  var ext = blobType.includes('ogg') ? 'ogg' : blobType.includes('mp4') ? 'm4a' : 'webm';
   var a = document.createElement('a');
   a.href = URL.createObjectURL(lastAudioBlob);
   a.download = title + '_' + date + '.' + ext;
