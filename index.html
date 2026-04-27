@@ -843,12 +843,13 @@ function startRec() {
   }
 
   var restartCount = 0;
+  var lastFinalTx = ''; // 防重複：記錄上一句已加入的文字
 
   function buildRecognition() {
     var r = new SR();
     r.lang = document.getElementById('liveLang').value;
     r.continuous = true;
-    r.interimResults = true;
+    r.interimResults = false; // Android 關掉 interim，避免重複觸發
     r.maxAlternatives = 1;
 
     r.onstart = function() {
@@ -858,15 +859,18 @@ function startRec() {
 
     r.onresult = function(e) {
       for (var i = e.resultIndex; i < e.results.length; i++) {
+        if (!e.results[i].isFinal) continue;
         var tx = e.results[i][0].transcript.trim();
-        if (e.results[i].isFinal && tx) {
-          var ts = document.getElementById('chkTimestamp').checked ? '[' + fmt(elapsed) + '] ' : '';
-          var sp = document.getElementById('chkSpeaker').checked ? '發言者' + (speakerIdx+1) + '：' : '';
-          var nl = document.getElementById('chkNewline').checked ? '\n' : ' ';
-          finalTx += ts + sp + tx + nl;
-          if (document.getElementById('chkSpeaker').checked) speakerIdx = (speakerIdx + 1) % 4;
-          syncTx();
-        }
+        if (!tx) continue;
+        // 去重：與上一句完全相同就跳過
+        if (tx === lastFinalTx) continue;
+        lastFinalTx = tx;
+        var ts = document.getElementById('chkTimestamp').checked ? '[' + fmt(elapsed) + '] ' : '';
+        var sp = document.getElementById('chkSpeaker').checked ? '發言者' + (speakerIdx+1) + '：' : '';
+        var nl = document.getElementById('chkNewline').checked ? '\n' : ' ';
+        finalTx += ts + sp + tx + nl;
+        if (document.getElementById('chkSpeaker').checked) speakerIdx = (speakerIdx + 1) % 4;
+        syncTx();
       }
     };
 
@@ -884,7 +888,7 @@ function startRec() {
     r.onend = function() {
       if (!isRec || isPaused) return;
       restartCount++;
-      var delay = Math.min(200 + restartCount * 30, 600);
+      var delay = Math.min(100 + restartCount * 20, 400); // 更快重啟，減少漏字
       setTimeout(function() {
         if (!isRec || isPaused) return;
         try {
@@ -1243,4 +1247,4 @@ window.addEventListener('resize', function() {
 </script>
 </body>
 </html>
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
