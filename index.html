@@ -558,6 +558,10 @@ var translateApiUrl = 'https://libretranslate.de/translate';
 var translateFailCount = 0; // API 失敗計數
 var lastDetectedLang = 'zh'; // 上次檢測的語言
 
+// 🔄 轉錄隊列（防止並發）
+var transcribeQueue = []; // 隊列：[{blob, pipe, segLabel, isFinal}, ...]
+var isTranscribing = false; // 是否正在轉錄中
+
 // ──────────────────────────────────────────────
 // Init
 // ──────────────────────────────────────────────
@@ -851,6 +855,33 @@ function translateText(text, targetLang) {
 
 function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
   retryCount = retryCount || 0;
+
+  // 🔄 加入隊列而不是直接轉錄
+  transcribeQueue.push({ blob: blob, pipe: pipe, segLabel: segLabel, isFinal: isFinal, retryCount: retryCount });
+  console.log('[隊列] 添加轉錄任務:', segLabel, '(隊列長度:', transcribeQueue.length, ')');
+
+  // 如果沒有正在轉錄，開始處理隊列
+  if (!isTranscribing) {
+    processTranscribeQueue();
+  }
+}
+
+function processTranscribeQueue() {
+  if (transcribeQueue.length === 0) {
+    isTranscribing = false;
+    console.log('[隊列] 所有任務完成');
+    return;
+  }
+
+  isTranscribing = true;
+  var task = transcribeQueue.shift();
+  console.log('[隊列] 處理:', task.segLabel, '(剩餘:', transcribeQueue.length, ')');
+
+  actuallyTranscribeBlob(task.blob, task.pipe, task.segLabel, task.isFinal, task.retryCount);
+}
+
+function actuallyTranscribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
+  retryCount = retryCount || 0;
   var prog = document.getElementById('liveWhisperProg');
   var pf = document.getElementById('liveProgFill');
   var pt = document.getElementById('liveProgText');
@@ -946,12 +977,15 @@ function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
     finalTx += displayText;
     syncTx();
     pt.textContent = '✅ ' + segLabel + ' 完成';
-    setTimeout(function() { prog.classList.remove('show'); }, 2000);
+    setTimeout(function() { prog.classList.remove('show'); }, 1000);
 
     if (isFinal) {
       setStatus('ok', '轉錄完成，共 ' + chunkCount + ' 段');
       elapsed = 0; document.getElementById('timer').textContent = '00:00';
     }
+
+    // 🔄 轉錄完成，繼續處理隊列中的下一個任務
+    setTimeout(function() { processTranscribeQueue(); }, 500);
   }).catch(function(err) {
     console.error('[轉錄錯誤]', segLabel, '錯誤訊息:', err.message || err);
     console.log('[調試]', {
@@ -978,7 +1012,9 @@ function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
       pt.textContent = '⚠️ ' + segLabel + '：音訊處理失敗，已略過';
       toast('⚠️ 音訊處理失敗，請調高麥克風增益', 3000);
       pf.style.width = '0%';
-      setTimeout(function() { prog.classList.remove('show'); }, 2000);
+      setTimeout(function() { prog.classList.remove('show'); }, 1000);
+      // 🔄 繼續處理隊列
+      setTimeout(function() { processTranscribeQueue(); }, 500);
       return;
     }
 
@@ -986,7 +1022,8 @@ function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
       retryCount++;
       pt.textContent = '⚠️ ' + segLabel + ' 重試中...';
       console.log('[重試]', segLabel);
-      setTimeout(function() { transcribeBlob(blob, pipe, segLabel, isFinal, retryCount); }, 1200);
+      // 重試：重新加入隊列
+      setTimeout(function() { actuallyTranscribeBlob(blob, pipe, segLabel, isFinal, retryCount); }, 1200);
       return;
     }
 
@@ -999,7 +1036,9 @@ function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
       toast('⚠️ ' + segLabel + ' 轉錄失敗', 3000);
     }
     pf.style.width = '0%';
-    setTimeout(function() { prog.classList.remove('show'); }, 2000);
+    setTimeout(function() { prog.classList.remove('show'); }, 1000);
+    // 🔄 繼續處理隊列
+    setTimeout(function() { processTranscribeQueue(); }, 500);
   });
 }
 
@@ -1052,25 +1091,25 @@ function startWhisperRec() {
     setStatus('rec', '模型載入中，請稍候...');
 
     loadWhisperPipeline(modelId, pf, pt).then(function(pipe) {
-      setStatus('rec', '✅ 錄音中，每10秒自動轉錄...');
-      pt.textContent = '✅ 模型就緒，邊錄邊轉（每10秒一段）';
+      setStatus('rec', '✅ 錄音中，每15秒自動轉錄...');
+      pt.textContent = '✅ 模型就緒，邊錄邊轉（隊列模式，保證穩定）';
       pf.style.width = '100%';
-      console.log('[Whisper] 開始即時轉錄，間隔: 10秒');
+      console.log('[Whisper] 開始即時轉錄，模式: 隊列（串行）， 間隔: 15秒');
       setTimeout(function() { document.getElementById('liveWhisperProg').classList.remove('show'); }, 2000);
 
-      // 每10秒自動切段轉錄（平衡即時性和穩定性）
+      // 每15秒自動切段轉錄（給隊列時間處理，防止堆積）
       chunkInterval = setInterval(function() {
         if (!isRec || isPaused || audioChunks.length === 0) return;
         chunkCount++;
         var batch = audioChunks.splice(0); // 取走目前所有 chunks，清空陣列
         var blob = new Blob(batch, { type: activeMime || 'audio/webm' });
-        console.log('[轉錄] 第' + chunkCount + '段，blob大小:', blob.size, '位元組');
+        console.log('[轉錄] 第' + chunkCount + '段，blob大小:', blob.size, '位元組，隊列長度:', transcribeQueue.length);
         if (blob.size < 5000) {
           console.log('[略過] blob太小，累積更多數據');
           return;
         }
         transcribeBlob(blob, pipe, '第' + chunkCount + '段', false);
-      }, 10000);
+      }, 15000);
 
     }).catch(function(err) {
       setStatus('', '❌ 模型載入失敗：' + err.message);
@@ -1328,7 +1367,7 @@ function togglePause() {
           return;
         }
         transcribeBlob(blob, pipe, '第' + chunkCount + '段', false);
-      }, 10000);
+      }, 15000);
       console.log('[暫停] 已恢復 Whisper 轉錄計時器');
     }
     console.log('[暫停] 已繼續錄音');
@@ -1521,6 +1560,26 @@ function doTranscribe() {
   var lang = document.getElementById('uploadLang').value;
   var gain = parseFloat(document.getElementById('uploadGain').value);
 
+  // 🔄 如果即時模式還有轉錄在進行，等待完成
+  if (isTranscribing || transcribeQueue.length > 0) {
+    pt.textContent = '⏳ 等待即時轉錄完成（' + (transcribeQueue.length + (isTranscribing ? 1 : 0)) + ' 個任務）...';
+    pf.style.width = '5%';
+    console.log('[上傳] 等待轉錄隊列完成...');
+    var waitInterval = setInterval(function() {
+      if (!isTranscribing && transcribeQueue.length === 0) {
+        clearInterval(waitInterval);
+        continueTranscribe(pw, pf, pt, btn, modelId, lang, gain);
+      } else {
+        pf.style.width = (5 + Math.random() * 10) + '%';
+      }
+    }, 500);
+    return;
+  }
+
+  continueTranscribe(pw, pf, pt, btn, modelId, lang, gain);
+}
+
+function continueTranscribe(pw, pf, pt, btn, modelId, lang, gain) {
   pt.textContent = '載入 AI 引擎中...';
   pf.style.width = '3%';
 
@@ -1531,7 +1590,7 @@ function doTranscribe() {
     env.useBrowserCache = true;
 
     pt.textContent = '下載 ' + modelId.split('/')[1] + ' 模型（首次需下載）...';
-    pf.style.width = '5%';
+    pf.style.width = '3%';
 
     var p;
     if (whisperCache[modelId]) {
