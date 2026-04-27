@@ -775,7 +775,7 @@ function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
 
     var opts = {
       task: 'transcribe',
-      chunk_length_s: 15, stride_length_s: 3,
+      chunk_length_s: 10, stride_length_s: 2,
       return_timestamps: false,
       condition_on_previous_text: false,
       language: lang !== 'auto' ? lang : 'zh',
@@ -819,15 +819,32 @@ function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
       elapsed = 0; document.getElementById('timer').textContent = '00:00';
     }
   }).catch(function(err) {
-    console.error('轉錄錯誤：', err);
+    console.error('[轉錄錯誤]', segLabel, '錯誤訊息:', err.message || err);
+    console.log('[調試] blob大小:', blob.size, 'retryCount:', retryCount);
+
     // 第二段常因 blob 太小或格式問題而失敗，嘗試重試
-    if (err.message && err.message.indexOf('shape') > -1 && retryCount < 2) {
+    var isRetryableError = err.message && (
+      err.message.indexOf('shape') > -1 ||
+      err.message.indexOf('dimension') > -1 ||
+      err.message.indexOf('size') > -1
+    );
+
+    if (isRetryableError && retryCount < 2) {
       retryCount++;
       pt.textContent = '⚠️ ' + segLabel + ' 重試 (' + retryCount + '/2)...';
-      setTimeout(function() { transcribeBlob(blob, pipe, segLabel, isFinal, retryCount); }, 1000);
+      console.log('[重試]', segLabel, '第', retryCount, '次');
+      setTimeout(function() { transcribeBlob(blob, pipe, segLabel, isFinal, retryCount); }, 1200);
       return;
     }
-    pt.textContent = '⚠️ ' + segLabel + '：轉錄失敗，已略過';
+
+    // blob 太小（<100ms 音訊）直接略過
+    if (blob.size < 5000) {
+      pt.textContent = '⚠️ ' + segLabel + '：音訊太短，已略過';
+      console.log('[略過]', segLabel, '音訊太短');
+    } else {
+      pt.textContent = '⚠️ ' + segLabel + '：轉錄失敗，已略過';
+      toast('⚠️ ' + segLabel + ' 轉錄失敗，可能是音訊品質問題', 4000);
+    }
     pf.style.width = '0%';
     setTimeout(function() { prog.classList.remove('show'); }, 2000);
   });
@@ -837,6 +854,19 @@ function startWhisperRec() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     setStatus('', '❌ 瀏覽器不支援麥克風存取'); return;
   }
+
+  // 📋 診斷日誌
+  var modelId = document.getElementById('liveWhisperModel').value;
+  var lang = document.getElementById('liveWhisperLang').value;
+  var gain = document.getElementById('gainSlider').value;
+  console.log('%c[開始 Whisper 錄音]', 'color:green;font-weight:bold', {
+    模型: modelId.split('/')[1],
+    語言: lang,
+    增益: gain + 'x',
+    轉錄間隔: '5秒',
+    Device: navigator.userAgent.includes('Android') ? 'Android' : 'iOS/Desktop'
+  });
+
   navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
     acquireWakeLock();
     micStream = stream;
@@ -869,19 +899,21 @@ function startWhisperRec() {
     setStatus('rec', '模型載入中，請稍候...');
 
     loadWhisperPipeline(modelId, pf, pt).then(function(pipe) {
-      setStatus('rec', '錄音中，每30秒自動轉錄...');
-      pt.textContent = '✅ 模型就緒，邊錄邊轉';
+      setStatus('rec', '✅ 錄音中，每5秒自動轉錄...');
+      pt.textContent = '✅ 模型就緒，邊錄邊轉（每5秒一段）';
       pf.style.width = '100%';
+      console.log('[Whisper] 開始即時轉錄，間隔: 5秒');
       setTimeout(function() { document.getElementById('liveWhisperProg').classList.remove('show'); }, 2000);
 
-      // 每15秒自動切段轉錄（更即時的反應）
+      // 每5秒自動切段轉錄（更即時的反應）
       chunkInterval = setInterval(function() {
-        if (!isRec || audioChunks.length === 0) return;
+        if (!isRec || isPaused || audioChunks.length === 0) return;
         chunkCount++;
         var batch = audioChunks.splice(0); // 取走目前所有 chunks，清空陣列
         var blob = new Blob(batch, { type: activeMime || 'audio/webm' });
+        console.log('[轉錄] 第' + chunkCount + '段，blob大小:', blob.size, '位元組');
         transcribeBlob(blob, pipe, '第' + chunkCount + '段', false);
-      }, 15000);
+      }, 5000);
 
     }).catch(function(err) {
       setStatus('', '❌ 模型載入失敗：' + err.message);
@@ -895,8 +927,16 @@ function startWhisperRec() {
 
 function stopWhisperRec() {
   isRec = false;
+  isPaused = false;
   releaseWakeLock();
   stopTimer();
+
+  console.log('[停止錄音]', {
+    總段數: chunkCount,
+    剩餘chunks: audioChunks.length,
+    總時長: fmt(elapsed)
+  });
+
   if (chunkInterval) { clearInterval(chunkInterval); chunkInterval = null; }
   if (micStream) { micStream.getTracks().forEach(function(t) { t.stop(); }); micStream = null; }
   if (audioCtx) { audioCtx.close(); audioCtx = null; }
@@ -908,11 +948,14 @@ function stopWhisperRec() {
 
   function finishRemaining() {
     if (audioChunks.length === 0) {
-      setStatus('ok', chunkCount > 0 ? '轉錄完成，共 ' + chunkCount + ' 段' : '未收到音訊');
+      var msg = chunkCount > 0 ? '轉錄完成，共 ' + chunkCount + ' 段' : '未收到音訊';
+      console.log('[完成]', msg);
+      setStatus('ok', msg);
       return;
     }
     chunkCount++;
     var blob = new Blob(audioChunks.splice(0), { type: activeMime || 'audio/webm' });
+    console.log('[最後一段] 開始轉錄，blob大小:', blob.size);
     // 用完整錄音 allAudioChunks 存檔（避免只存最後一段殘缺 WebM）
     lastAudioBlob = new Blob(allAudioChunks, { type: activeMime || 'audio/webm' });
     document.getElementById('arPlayer').src = URL.createObjectURL(lastAudioBlob);
@@ -923,12 +966,16 @@ function stopWhisperRec() {
     } else {
       // 模型還沒載入完（錄太短），重新載入後轉
       setStatus('', '載入模型後轉錄...');
+      console.log('[重新載入] 模型未就緒，觸發重新加載');
       loadWhisperPipeline(modelId,
         document.getElementById('liveProgFill'),
         document.getElementById('liveProgText')
       ).then(function(p) {
         transcribeBlob(blob, p, '最後一段', true);
-      }).catch(function(err) { setStatus('', '轉錄失敗：' + err.message); });
+      }).catch(function(err) {
+        console.error('[轉錄失敗]', err);
+        setStatus('', '❌ 轉錄失敗：' + err.message);
+      });
     }
   }
 
@@ -936,7 +983,12 @@ function stopWhisperRec() {
     finishRemaining(); return;
   }
   mediaRecorder.onstop = function() { mediaRecorder = null; finishRemaining(); };
-  mediaRecorder.stop();
+  try {
+    mediaRecorder.stop();
+  } catch(e) {
+    console.error('[停止recorder錯誤]', e);
+    finishRemaining();
+  }
 }
 
 // ── 即時識別模式（Chrome / Android）──
@@ -1073,18 +1125,69 @@ function stopRec() {
 function togglePause() {
   if (!isRec) return;
   if (isPaused) {
+    // 繼續錄音
     isPaused = false;
     if (mediaRecorder && mediaRecorder.state === 'paused') mediaRecorder.resume();
+    if (recMode === 'live' && recognition) {
+      // 即時識別：重啟語音識別
+      try { recognition.abort(); } catch(e) {}
+      var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SR) {
+        recognition = new SR();
+        recognition.lang = document.getElementById('liveLang').value;
+        recognition.continuous = true;
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+        recognition.onresult = function(e) {
+          for (var i = e.resultIndex; i < e.results.length; i++) {
+            if (!e.results[i].isFinal) continue;
+            var tx = e.results[i][0].transcript.trim();
+            if (!tx) continue;
+            var ts = document.getElementById('chkTimestamp').checked ? '[' + fmt(elapsed) + '] ' : '';
+            var sp = document.getElementById('chkSpeaker').checked ? '發言者' + (speakerIdx+1) + '：' : '';
+            var nl = document.getElementById('chkNewline').checked ? '\n' : ' ';
+            finalTx += ts + sp + tx + nl;
+            if (document.getElementById('chkSpeaker').checked) speakerIdx = (speakerIdx + 1) % 4;
+            syncTx();
+          }
+        };
+        recognition.start();
+      }
+    }
     startTimer();
-    setStatus('rec', '錄音中，正在識別...');
+    setStatus('rec', recMode === 'whisper' ? '錄音中，每5秒自動轉錄...' : '🎤 錄音中，正在識別...');
     document.getElementById('btnPause').textContent = '⏸ 暫停';
+    // ⭐ Whisper 模式：恢復轉錄計時器
+    if (recMode === 'whisper' && !chunkInterval && whisperCache[document.getElementById('liveWhisperModel').value]) {
+      var pipe = whisperCache[document.getElementById('liveWhisperModel').value];
+      chunkInterval = setInterval(function() {
+        if (!isRec || isPaused || audioChunks.length === 0) return;
+        chunkCount++;
+        var batch = audioChunks.splice(0);
+        var blob = new Blob(batch, { type: activeMime || 'audio/webm' });
+        console.log('[轉錄] 第' + chunkCount + '段，blob大小:', blob.size, '位元組');
+        transcribeBlob(blob, pipe, '第' + chunkCount + '段', false);
+      }, 5000);
+      console.log('[暫停] 已恢復 Whisper 轉錄計時器');
+    }
+    console.log('[暫停] 已繼續錄音');
   } else {
+    // 暫停錄音
     isPaused = true;
-    if (recognition) recognition.abort();
+    if (recognition) {
+      try { recognition.abort(); } catch(e) {}
+      recognition = null;
+    }
     if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.pause();
+    // ⭐ 關鍵：暫停時停止轉錄計時器
+    if (chunkInterval) {
+      clearInterval(chunkInterval);
+      console.log('[暫停] 已停止 Whisper 轉錄計時器');
+    }
     stopTimer();
-    setStatus('', '已暫停');
+    setStatus('', '已暫停（按▶繼續）');
     document.getElementById('btnPause').textContent = '▶ 繼續';
+    console.log('[暫停] 已暫停錄音');
   }
 }
 
@@ -1319,8 +1422,8 @@ function doTranscribe() {
 
           var opts = {
             task: 'transcribe',
-            chunk_length_s: 15,
-            stride_length_s: 3,
+            chunk_length_s: 10,
+            stride_length_s: 2,
             return_timestamps: true,
             condition_on_previous_text: false,
             language: lang !== 'auto' ? lang : 'zh',
@@ -1443,18 +1546,23 @@ function preloadWhisperModel() {
   if (!sel) return;
   var modelId = sel.value;
   if (whisperCache[modelId]) {
+    console.log('[預加載] 模型已在快取中，無需重複下載:', modelId.split('/')[1]);
     setStatus('', '✅ 模型已就緒，點擊錄音');
     return;
   }
+  console.log('[預加載] 開始背景載入模型:', modelId.split('/')[1]);
   setStatus('', '⏳ 背景載入模型中...');
   loadWhisperPipeline(modelId,
     function(p) { // progress
       if (p.status === 'downloading' || p.status === 'progress') {
         var pct = p.progress ? Math.round(p.progress) : '';
         setStatus('', '⬇️ 預載模型' + (pct ? ' ' + pct + '%' : ''));
+      } else if (p.status === 'loading') {
+        setStatus('', '⏳ 模型載入至記憶體...');
       }
     },
     function(pipe) { // done
+      console.log('[預加載] 模型加載完成:', modelId.split('/')[1]);
       if (recMode === 'whisper') setStatus('', '✅ 模型已就緒，點擊錄音');
     }
   );
