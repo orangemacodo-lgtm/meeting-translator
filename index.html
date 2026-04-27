@@ -1252,7 +1252,12 @@ function saveFull() {
   var content = [sep,'  會議記錄  Meeting Minutes',sep,
     '會議主題：'+title,'日期時間：'+date,'與會人員：'+(ppl||'（未填寫）'),sep,'',
     v.trim(),'',sep,
-    '本記錄由 AI 會議記錄系統自動生成 · '+new Date().toLocaleString('zh-Tfunction saveAudio() {
+    '本記錄由 AI 會議記錄系統自動生成 · '+new Date().toLocaleString('zh-TW')].join('\n');
+  dl(content, title + '_' + date + '_完整記錄.txt', 'text/plain;charset=utf-8');
+  toast('已儲存完整記錄');
+}
+
+function saveAudio() {
   if (!lastAudioBlob) { toast('尚無可儲存的音檔'); return; }
   var title = document.getElementById('mtgTitle').value || '會議錄音';
   var date = new Date().toISOString().slice(0,10);
