@@ -291,12 +291,15 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
 <div class="card" id="panel-live">
   <!-- 模式切換 -->
   <div class="mode-row">
-    <button class="mode-btn on" id="modeBtnLive" onclick="setRecMode('live')">⚡ 即時識別（Chrome）</button>
-    <button class="mode-btn" id="modeBtnWhisper" onclick="setRecMode('whisper')">🤖 Whisper 離線（全裝置）</button>
+    <button class="mode-btn" id="modeBtnLive" onclick="setRecMode('live')">⚡ 即時識別（Chrome）</button>
+    <button class="mode-btn on" id="modeBtnWhisper" onclick="setRecMode('whisper')">🤖 Whisper 離線（全裝置）</button>
   </div>
 
   <div class="compat-banner" id="compatBanner">
     ⚠️ 目前瀏覽器不支援即時識別，已自動切換為 Whisper 離線模式。
+  </div>
+  <div class="compat-banner" id="androidWarnBanner" style="display:none;background:#7c3a00;">
+    ⚠️ Android 裝置即時識別穩定性有限，7分鐘可能只抓到幾句。建議改用「Whisper 離線」獲得完整記錄。
   </div>
 
   <div class="ctrl-row" id="liveLangRow">
@@ -527,7 +530,7 @@ var finalTx = '', speakerIdx = 0;
 var selectedFile = null;
 var whisperCache = {};
 var mediaRecorder = null, audioChunks = [], lastAudioBlob = null;
-var recMode = 'live'; // 'live' | 'whisper'
+var recMode = 'whisper'; // 'live' | 'whisper'
 var wakeLock = null;
 var wasRecInBackground = false;
 var chunkInterval = null, chunkCount = 0, activeMime = '';
@@ -541,6 +544,10 @@ window.addEventListener('DOMContentLoaded', function() {
   setupDnD();
   setupSliders();
   setupTranscript();
+  // 預設 Whisper 模式（若 checkCompat 尚未切換）
+  if (recMode !== 'live') setRecMode('whisper');
+  // 背景預載 Whisper 模型（延遲 3 秒避免阻塞頁面渲染）
+  setTimeout(function() { preloadWhisperModel(); }, 3000);
 });
 
 function setDate() {
@@ -564,10 +571,15 @@ function setRecMode(mode) {
   document.getElementById('modeBtnWhisper').classList.toggle('on', mode === 'whisper');
   document.getElementById('whisperModeOpts').style.display = mode === 'whisper' ? 'block' : 'none';
   document.getElementById('liveLangRow').style.display = mode === 'live' ? 'flex' : 'none';
-  if (mode === 'whisper') {
-    setStatus('', '點擊錄音，每30秒自動轉錄一次');
-  } else {
+  var androidWarn = document.getElementById('androidWarnBanner');
+  if (mode === 'live') {
+    var isAndroid = /Android/i.test(navigator.userAgent);
+    if (androidWarn) androidWarn.style.display = isAndroid ? 'block' : 'none';
     setStatus('', '點擊紅色按鈕開始錄音');
+  } else {
+    if (androidWarn) androidWarn.style.display = 'none';
+    var ready = whisperCache[document.getElementById('whisperModel') ? document.getElementById('whisperModel').value : ''];
+    setStatus('', ready ? '✅ 模型已就緒，點擊錄音' : '點擊錄音，每30秒自動轉錄一次');
   }
 }
 
@@ -895,6 +907,7 @@ function startRec() {
     };
 
     r.onresult = function(e) {
+      restartCount = 0; // 成功識別後重置重試計數
       for (var i = e.resultIndex; i < e.results.length; i++) {
         if (!e.results[i].isFinal) continue;
         var tx = e.results[i][0].transcript.trim();
@@ -925,7 +938,7 @@ function startRec() {
     r.onend = function() {
       if (!isRec || isPaused) return;
       restartCount++;
-      var delay = Math.min(100 + restartCount * 20, 400); // 更快重啟，減少漏字
+      var delay = 50; // 固定 50ms，最小化漏字視窗
       setTimeout(function() {
         if (!isRec || isPaused) return;
         try {
@@ -1284,6 +1297,28 @@ function saveAudio() {
   toast('音檔已下載');
 }
 
+
+function preloadWhisperModel() {
+  var sel = document.getElementById('whisperModel');
+  if (!sel) return;
+  var modelId = sel.value;
+  if (whisperCache[modelId]) {
+    setStatus('', '✅ 模型已就緒，點擊錄音');
+    return;
+  }
+  setStatus('', '⏳ 背景載入模型中...');
+  loadWhisperPipeline(modelId,
+    function(p) { // progress
+      if (p.status === 'downloading' || p.status === 'progress') {
+        var pct = p.progress ? Math.round(p.progress) : '';
+        setStatus('', '⬇️ 預載模型' + (pct ? ' ' + pct + '%' : ''));
+      }
+    },
+    function(pipe) { // done
+      if (recMode === 'whisper') setStatus('', '✅ 模型已就緒，點擊錄音');
+    }
+  );
+}
 
 function acquireWakeLock() {
   if ('wakeLock' in navigator) {
