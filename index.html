@@ -366,8 +366,8 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
         <div class="ctrl-label">🤖 Whisper 模型</div>
         <select id="liveWhisperModel">
           <option value="Xenova/whisper-tiny">Tiny（最快，~75MB）</option>
-          <option value="Xenova/whisper-base" selected>Base（均衡，~140MB）</option>
-          <option value="Xenova/whisper-small">Small（高品質，~240MB）</option>
+          <option value="Xenova/whisper-base">Base（均衡，~140MB）</option>
+          <option value="Xenova/whisper-small" selected>Small（高品質，推薦！~240MB）</option>
         </select>
       </div>
       <div class="ctrl-group">
@@ -424,8 +424,8 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
       <div class="ctrl-label">🤖 Whisper 模型</div>
       <select id="whisperModel">
         <option value="Xenova/whisper-tiny">Tiny（最快，~75MB）</option>
-        <option value="Xenova/whisper-base" selected>Base（均衡，~140MB）</option>
-        <option value="Xenova/whisper-small">Small（高品質，~240MB）</option>
+        <option value="Xenova/whisper-base">Base（均衡，~140MB）</option>
+        <option value="Xenova/whisper-small" selected>Small（高品質，推薦！~240MB）</option>
         <option value="Xenova/whisper-medium">Medium（最精準，~770MB）</option>
       </select>
     </div>
@@ -703,6 +703,29 @@ function loadWhisperPipeline(modelId, pf, pt) {
   });
 }
 
+// 音頻增強：音量正規化 + 高通濾波去低頻噪音
+function enhanceAudio(audioData) {
+  // 1. 高通濾波（去除 < 100Hz 低頻雜音）
+  var filtered = new Float32Array(audioData.length);
+  var coeff = 0.95; // 濾波係數（越高越強）
+  filtered[0] = audioData[0];
+  for (var i = 1; i < audioData.length; i++) {
+    filtered[i] = coeff * (filtered[i-1] + audioData[i] - audioData[i-1]);
+  }
+
+  // 2. 音量正規化（RMS normalization）確保最佳電平
+  var sum = 0;
+  for (var i = 0; i < filtered.length; i++) sum += filtered[i] * filtered[i];
+  var rms = Math.sqrt(sum / filtered.length);
+  var target = 0.1; // 目標 RMS 電平
+  var scale = rms > 0 ? target / rms : 1;
+  for (var i = 0; i < filtered.length; i++) {
+    filtered[i] = Math.max(-1, Math.min(1, filtered[i] * scale));
+  }
+
+  return filtered;
+}
+
 function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
   retryCount = retryCount || 0;
   var prog = document.getElementById('liveWhisperProg');
@@ -731,14 +754,20 @@ function transcribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
     pf.style.width = '60%';
     pt.textContent = segLabel + ' 轉錄中...';
     var audioData = resampled.getChannelData(0);
+
+    // 音頻增強：音量正規化 + 高通濾波去低頻噪音
+    audioData = enhanceAudio(audioData);
+
     var opts = {
       task: 'transcribe',
       chunk_length_s: 30, stride_length_s: 3,
       return_timestamps: false,
       condition_on_previous_text: false,
-      initial_prompt: '以下是繁體中文（台灣用語）的會議記錄。'
+      language: lang !== 'auto' ? lang : 'zh',
+      temperature: 0, // 確定性輸出，避免錯字
+      repetition_penalty: 1.5, // 防止重複
+      initial_prompt: '以下是繁體中文台灣用語的會議記錄。請準確轉錄每一句話，不要漏字。'
     };
-    if (lang !== 'auto') opts.language = lang; else opts.language = 'zh';
     return pipe(audioData, opts);
   }).then(function(result) {
     pf.style.width = '100%';
@@ -1269,11 +1298,21 @@ function doTranscribe() {
 
       return decodeToFloat32().then(function(audioData) {
           pf.style.width = '90%';
-          var opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true,
-                       condition_on_previous_text: false,
-                       initial_prompt: '以下是繁體中文（台灣用語）的會議記錄。' };
-          if (lang !== 'auto') opts.language = lang;
-          else opts.language = 'zh';
+
+          // 音頻增強：音量正規化 + 高通濾波去低頻噪音
+          audioData = enhanceAudio(audioData);
+
+          var opts = {
+            task: 'transcribe',
+            chunk_length_s: 30,
+            stride_length_s: 5,
+            return_timestamps: true,
+            condition_on_previous_text: false,
+            language: lang !== 'auto' ? lang : 'zh',
+            temperature: 0, // 確定性輸出，避免錯字
+            repetition_penalty: 1.5, // 防止重複
+            initial_prompt: '以下是繁體中文台灣用語的會議記錄。請準確轉錄每一句話，不要漏字。'
+          };
           return transcriber(audioData, opts);
       }).then(function(result) {
         pf.style.width = '100%';
