@@ -528,6 +528,7 @@ var selectedFile = null;
 var whisperCache = {};
 var mediaRecorder = null, audioChunks = [], lastAudioBlob = null;
 var recMode = 'live'; // 'live' | 'whisper'
+var chunkInterval = null, chunkCount = 0, activeMime = '';
 
 // ──────────────────────────────────────────────
 // Init
@@ -562,7 +563,7 @@ function setRecMode(mode) {
   document.getElementById('whisperModeOpts').style.display = mode === 'whisper' ? 'block' : 'none';
   document.getElementById('liveLangRow').style.display = mode === 'live' ? 'flex' : 'none';
   if (mode === 'whisper') {
-    setStatus('', '點擊錄音，停止後自動轉成文字');
+    setStatus('', '點擊錄音，每30秒自動轉錄一次');
   } else {
     setStatus('', '點擊紅色按鈕開始錄音');
   }
@@ -662,41 +663,153 @@ function toggleRec() {
   }
 }
 
-// ── Whisper 錄音模式 ──
+// ── Whisper 錄音模式（邊錄邊轉，每30秒自動轉一次）──
+
+function loadWhisperPipeline(modelId, pf, pt) {
+  if (whisperCache[modelId]) return Promise.resolve(whisperCache[modelId]);
+  return import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2').then(function(mod) {
+    var env = mod.env;
+    env.allowLocalModels = false;
+    env.useBrowserCache = true;
+    return mod.pipeline('automatic-speech-recognition', modelId, {
+      quantized: true,
+      progress_callback: function(p) {
+        if (p.status === 'downloading' || p.status === 'progress') {
+          if (pf) pf.style.width = (5 + (p.progress||0) * 0.75) + '%';
+          if (pt) pt.textContent = '下載模型：' + Math.round(p.progress||0) + '%';
+        } else if (p.status === 'loading') {
+          if (pf) pf.style.width = '82%';
+          if (pt) pt.textContent = '載入模型至記憶體...';
+        }
+      }
+    });
+  }).then(function(pipe) {
+    whisperCache[modelId] = pipe;
+    return pipe;
+  });
+}
+
+function transcribeBlob(blob, pipe, segLabel, isFinal) {
+  var prog = document.getElementById('liveWhisperProg');
+  var pf = document.getElementById('liveProgFill');
+  var pt = document.getElementById('liveProgText');
+  prog.classList.add('show');
+  pf.style.width = '10%';
+  pt.textContent = segLabel + ' 解碼中...';
+
+  var lang = document.getElementById('liveWhisperLang').value;
+
+  return blob.arrayBuffer().then(function(buf) {
+    var tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
+    return tmpCtx.decodeAudioData(buf).then(function(decoded) {
+      tmpCtx.close();
+      var TARGET = 16000;
+      var offCtx = new OfflineAudioContext(1, Math.ceil(decoded.duration * TARGET), TARGET);
+      var src = offCtx.createBufferSource();
+      src.buffer = decoded;
+      var gn = offCtx.createGain();
+      gn.gain.value = parseFloat(document.getElementById('gainSlider').value);
+      src.connect(gn); gn.connect(offCtx.destination); src.start(0);
+      return offCtx.startRendering();
+    });
+  }).then(function(resampled) {
+    pf.style.width = '60%';
+    pt.textContent = segLabel + ' 轉錄中...';
+    var audioData = resampled.getChannelData(0);
+    var opts = {
+      task: 'transcribe',
+      chunk_length_s: 30, stride_length_s: 3,
+      return_timestamps: false,
+      initial_prompt: '以下是繁體中文（台灣用語）的會議記錄。'
+    };
+    if (lang !== 'auto') opts.language = lang; else opts.language = 'zh';
+    return pipe(audioData, opts);
+  }).then(function(result) {
+    pf.style.width = '100%';
+    var out = (result.text || '').trim();
+    if (!out) { pt.textContent = segLabel + '：無語音'; setTimeout(function() { prog.classList.remove('show'); }, 1500); return; }
+
+    // 幻覺偵測
+    var clean = out.replace(/\s/g, '');
+    if (clean.length >= 8) {
+      var freq = {};
+      for (var ci = 0; ci < clean.length; ci++) freq[clean[ci]] = (freq[clean[ci]]||0)+1;
+      var maxF = 0; for (var k in freq) if (freq[k] > maxF) maxF = freq[k];
+      if (maxF / clean.length > 0.35) {
+        pt.textContent = '⚠️ ' + segLabel + '：語言偵測失敗，請改選「中文」';
+        setTimeout(function() { prog.classList.remove('show'); }, 3000);
+        return;
+      }
+    }
+
+    var ts = document.getElementById('chkTimestamp').checked ? '[' + fmt(elapsed) + '] ' : '';
+    finalTx += ts + out + '\n';
+    syncTx();
+    pt.textContent = '✅ ' + segLabel + ' 完成';
+    setTimeout(function() { prog.classList.remove('show'); }, 2000);
+
+    if (isFinal) {
+      setStatus('ok', '轉錄完成，共 ' + chunkCount + ' 段');
+      elapsed = 0; document.getElementById('timer').textContent = '00:00';
+    }
+  }).catch(function(err) {
+    pt.textContent = '❌ ' + segLabel + '：' + err.message;
+    pf.style.width = '0%';
+    console.error(err);
+    setTimeout(function() { prog.classList.remove('show'); }, 3000);
+  });
+}
+
 function startWhisperRec() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    setStatus('', '❌ 瀏覽器不支援麥克風存取');
-    return;
+    setStatus('', '❌ 瀏覽器不支援麥克風存取'); return;
   }
   navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
     micStream = stream;
     initAudio(stream);
-
-    audioChunks = [];
-    lastAudioBlob = null;
+    audioChunks = []; lastAudioBlob = null; chunkCount = 0;
     document.getElementById('audioResult').classList.remove('show');
 
-    var mimeType = '';
     var types = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'];
+    activeMime = '';
     for (var i = 0; i < types.length; i++) {
-      if (window.MediaRecorder && MediaRecorder.isTypeSupported(types[i])) {
-        mimeType = types[i]; break;
-      }
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(types[i])) { activeMime = types[i]; break; }
     }
-    try {
-      mediaRecorder = new MediaRecorder(micStream, mimeType ? { mimeType: mimeType } : {});
-    } catch(e) {
-      mediaRecorder = new MediaRecorder(micStream);
-    }
-    mediaRecorder.ondataavailable = function(e) {
-      if (e.data && e.data.size > 0) audioChunks.push(e.data);
-    };
+    try { mediaRecorder = new MediaRecorder(micStream, activeMime ? {mimeType: activeMime} : {}); }
+    catch(e) { mediaRecorder = new MediaRecorder(micStream); activeMime = ''; }
+    mediaRecorder.ondataavailable = function(e) { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
     mediaRecorder.start(500);
 
-    isRec = true;
-    startTimer();
-    uiRec(true);
-    setStatus('rec', '錄音中（停止後自動轉成文字）');
+    isRec = true; startTimer(); uiRec(true);
+
+    // 預先載入模型
+    var modelId = document.getElementById('liveWhisperModel').value;
+    var pf = document.getElementById('liveProgFill');
+    var pt = document.getElementById('liveProgText');
+    document.getElementById('liveWhisperProg').classList.add('show');
+    pf.style.width = '3%';
+    pt.textContent = '載入 Whisper 模型（首次需下載）...';
+    setStatus('rec', '模型載入中，請稍候...');
+
+    loadWhisperPipeline(modelId, pf, pt).then(function(pipe) {
+      setStatus('rec', '錄音中，每30秒自動轉錄...');
+      pt.textContent = '✅ 模型就緒，邊錄邊轉';
+      pf.style.width = '100%';
+      setTimeout(function() { document.getElementById('liveWhisperProg').classList.remove('show'); }, 2000);
+
+      // 每30秒自動切段轉錄
+      chunkInterval = setInterval(function() {
+        if (!isRec || audioChunks.length === 0) return;
+        chunkCount++;
+        var batch = audioChunks.splice(0); // 取走目前所有 chunks，清空陣列
+        var blob = new Blob(batch, { type: activeMime || 'audio/webm' });
+        transcribeBlob(blob, pipe, '第' + chunkCount + '段', false);
+      }, 30000);
+
+    }).catch(function(err) {
+      setStatus('', '❌ 模型載入失敗：' + err.message);
+      pt.textContent = '❌ 載入失敗：' + err.message;
+    });
 
   }).catch(function(e) {
     setStatus('', '❌ 無法取得麥克風：' + e.message);
@@ -706,132 +819,45 @@ function startWhisperRec() {
 function stopWhisperRec() {
   isRec = false;
   stopTimer();
-
+  if (chunkInterval) { clearInterval(chunkInterval); chunkInterval = null; }
   if (micStream) { micStream.getTracks().forEach(function(t) { t.stop(); }); micStream = null; }
   if (audioCtx) { audioCtx.close(); audioCtx = null; }
   gainNode = null; analyser = null;
-  clearViz();
-  uiRec(false);
-  setStatus('', '轉錄中，請稍候...');
-
-  if (!mediaRecorder || mediaRecorder.state === 'inactive') {
-    if (audioChunks.length > 0) runWhisperOnChunks();
-    else setStatus('ok', '未收到音訊');
-    return;
-  }
-
-  mediaRecorder.onstop = function() {
-    mediaRecorder = null;
-    if (audioChunks.length === 0) { setStatus('ok', '未收到音訊'); return; }
-    runWhisperOnChunks();
-  };
-  mediaRecorder.stop();
-}
-
-function runWhisperOnChunks() {
-  var mimeType = (audioChunks[0] && audioChunks[0].type) ? audioChunks[0].type : 'audio/webm';
-  lastAudioBlob = new Blob(audioChunks, { type: mimeType });
-  var url = URL.createObjectURL(lastAudioBlob);
-  document.getElementById('arPlayer').src = url;
-  document.getElementById('audioResult').classList.add('show');
-
-  var prog = document.getElementById('liveWhisperProg');
-  var pf = document.getElementById('liveProgFill');
-  var pt = document.getElementById('liveProgText');
-  prog.classList.add('show');
-  pf.style.width = '3%';
+  clearViz(); uiRec(false);
 
   var modelId = document.getElementById('liveWhisperModel').value;
-  var lang = document.getElementById('liveWhisperLang').value;
-  pt.textContent = '載入 Whisper 引擎...';
+  var pipe = whisperCache[modelId];
 
-  import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2').then(function(mod) {
-    var pipeline = mod.pipeline;
-    var env = mod.env;
-    env.allowLocalModels = false;
-    env.useBrowserCache = true;
-
-    var p;
-    if (whisperCache[modelId]) {
-      p = Promise.resolve(whisperCache[modelId]);
-    } else {
-      pt.textContent = '下載模型（首次需下載）...';
-      p = pipeline('automatic-speech-recognition', modelId, {
-        quantized: true,
-        progress_callback: function(prog) {
-          if (prog.status === 'downloading' || prog.status === 'progress') {
-            pf.style.width = (5 + (prog.progress||0)*0.75) + '%';
-            pt.textContent = '下載模型：' + Math.round(prog.progress||0) + '%';
-          } else if (prog.status === 'loading') {
-            pf.style.width = '82%'; pt.textContent = '載入模型...';
-          }
-        }
-      }).then(function(pipe) { whisperCache[modelId] = pipe; return pipe; });
+  function finishRemaining() {
+    if (audioChunks.length === 0) {
+      setStatus('ok', chunkCount > 0 ? '轉錄完成，共 ' + chunkCount + ' 段' : '未收到音訊');
+      return;
     }
+    chunkCount++;
+    var blob = new Blob(audioChunks.splice(0), { type: activeMime || 'audio/webm' });
+    lastAudioBlob = blob;
+    document.getElementById('arPlayer').src = URL.createObjectURL(blob);
+    document.getElementById('audioResult').classList.add('show');
+    setStatus('', '轉錄最後一段中...');
+    if (pipe) {
+      transcribeBlob(blob, pipe, '最後一段', true);
+    } else {
+      // 模型還沒載入完（錄太短），重新載入後轉
+      setStatus('', '載入模型後轉錄...');
+      loadWhisperPipeline(modelId,
+        document.getElementById('liveProgFill'),
+        document.getElementById('liveProgText')
+      ).then(function(p) {
+        transcribeBlob(blob, p, '最後一段', true);
+      }).catch(function(err) { setStatus('', '轉錄失敗：' + err.message); });
+    }
+  }
 
-    return p.then(function(pipe) {
-      pf.style.width = '85%'; pt.textContent = '解碼音訊並轉錄中...';
-      var buf2;
-      return lastAudioBlob.arrayBuffer().then(function(buf) {
-        buf2 = buf;
-        var tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
-        return tmpCtx.decodeAudioData(buf).then(function(decoded) {
-          tmpCtx.close();
-          var TARGET = 16000;
-          var offCtx = new OfflineAudioContext(1, Math.ceil(decoded.duration * TARGET), TARGET);
-          var src2 = offCtx.createBufferSource();
-          src2.buffer = decoded;
-          var gn2 = offCtx.createGain();
-          gn2.gain.value = parseFloat(document.getElementById('gainSlider').value);
-          src2.connect(gn2); gn2.connect(offCtx.destination); src2.start(0);
-          return offCtx.startRendering();
-        }).then(function(resampled) {
-          var audioData = resampled.getChannelData(0);
-          var opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true,
-                       initial_prompt: '以下是繁體中文（台灣用語）的會議記錄。' };
-          if (lang !== 'auto') opts.language = lang;
-          else opts.language = 'zh';
-          return pipe(audioData, opts);
-        });
-      }).then(function(result) {
-        pf.style.width = '100%'; pt.textContent = '✅ 轉錄完成！';
-        var out = '';
-        if (result.chunks && result.chunks.length) {
-          result.chunks.forEach(function(c) {
-            var ts = document.getElementById('chkTimestamp').checked && c.timestamp && c.timestamp[0] != null
-              ? '[' + fmt(Math.floor(c.timestamp[0])) + '] ' : '';
-            out += ts + c.text.trim() + '\n';
-          });
-        } else { out = (result.text || '').trim() + '\n'; }
-
-        // 幻覺偵測：單一字重複超過35%代表識別失敗
-        var clean = out.replace(/[\s\n\r]/g, '');
-        if (clean.length >= 8) {
-          var freq = {};
-          for (var ci = 0; ci < clean.length; ci++) freq[clean[ci]] = (freq[clean[ci]]||0)+1;
-          var maxF = 0;
-          for (var k in freq) { if (freq[k] > maxF) maxF = freq[k]; }
-          if (maxF / clean.length > 0.35) {
-            pt.textContent = '⚠️ 語言偵測失敗，請改選「中文」再試';
-            toast('⚠️ 輸出異常（重複字元），請將語言選「中文」後重新轉錄', 5000);
-            return;
-          }
-        }
-
-        finalTx += out;
-        syncTx();
-        setStatus('ok', '轉錄完成，共 ' + fmt(elapsed));
-        elapsed = 0; document.getElementById('timer').textContent = '00:00';
-        setTimeout(function() { prog.classList.remove('show'); }, 3000);
-      });
-    });
-
-  }).catch(function(err) {
-    pt.textContent = '❌ ' + err.message;
-    pf.style.width = '0%';
-    setStatus('', '轉錄失敗：' + err.message);
-    console.error(err);
-  });
+  if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+    finishRemaining(); return;
+  }
+  mediaRecorder.onstop = function() { mediaRecorder = null; finishRemaining(); };
+  mediaRecorder.stop();
 }
 
 // ── 即時識別模式（Chrome / Android）──
@@ -1239,7 +1265,6 @@ function toast(msg, dur) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(function() { el.classList.remove('show'); }, dur);
 }
-
 window.addEventListener('resize', function() {
   var c = document.getElementById('viz');
   if (c) { c.width = c.offsetWidth; }
@@ -1247,4 +1272,3 @@ window.addEventListener('resize', function() {
 </script>
 </body>
 </html>
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
