@@ -370,8 +370,8 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
       <div class="ctrl-group">
         <div class="ctrl-label">🌐 錄音語言</div>
         <select id="liveWhisperLang">
-          <option value="auto">自動偵測</option>
-          <option value="zh">中文</option>
+          <option value="auto">自動偵測（易出錯）</option>
+          <option value="zh" selected>中文（推薦）</option>
           <option value="en">English</option>
           <option value="ja">日本語</option>
           <option value="ko">한국어</option>
@@ -902,7 +902,8 @@ function startRec() {
     return r;
   }
 
-  // ★ Android 關鍵：先啟動 SpeechRecognition，才不會被 getUserMedia 搶麥克風
+  // ★ 即時識別模式：完全不呼叫 getUserMedia，讓 SpeechRecognition 獨佔麥克風
+  // （Android Chrome 只要有其他程序持有麥克風，識別就會靜默無輸出）
   recognition = buildRecognition();
   try {
     recognition.start();
@@ -914,34 +915,7 @@ function startRec() {
   startTimer();
   uiRec(true);
   setStatus('rec', '錄音中，正在識別...');
-
-  // 再非同步取麥克風做波形顯示 + 存音檔（失敗不影響識別）
-  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-    navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
-      if (!isRec) { stream.getTracks().forEach(function(t){t.stop();}); return; }
-      micStream = stream;
-      initAudio(stream);
-      if (document.getElementById('chkSaveAudio').checked && window.MediaRecorder) {
-        audioChunks = [];
-        lastAudioBlob = null;
-        document.getElementById('audioResult').classList.remove('show');
-        var mimeType = '';
-        var types = ['audio/webm;codecs=opus','audio/webm','audio/ogg'];
-        for (var i = 0; i < types.length; i++) {
-          if (MediaRecorder.isTypeSupported(types[i])) { mimeType = types[i]; break; }
-        }
-        try {
-          mediaRecorder = new MediaRecorder(micStream, mimeType ? { mimeType: mimeType } : {});
-          mediaRecorder.ondataavailable = function(e) {
-            if (e.data && e.data.size > 0) audioChunks.push(e.data);
-          };
-          mediaRecorder.start(1000);
-        } catch(e) { mediaRecorder = null; }
-      }
-    }).catch(function() {
-      // 波形顯示無法使用，但識別仍正常運作
-    });
-  }
+  // 波形顯示在即時識別模式略過（避免麥克風衝突）
 }
 
 function stopRec() {
@@ -1269,3 +1243,4 @@ window.addEventListener('resize', function() {
 </script>
 </body>
 </html>
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
