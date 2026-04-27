@@ -429,8 +429,8 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
     <div class="ctrl-group">
       <div class="ctrl-label">🌐 音檔語言</div>
       <select id="uploadLang">
-        <option value="auto">自動偵測</option>
-        <option value="zh">中文</option>
+        <option value="auto">自動偵測（易出錯）</option>
+        <option value="zh" selected>中文（推薦）</option>
         <option value="en">English</option>
         <option value="ja">日本語</option>
         <option value="ko">한국어</option>
@@ -787,8 +787,10 @@ function runWhisperOnChunks() {
           return offCtx.startRendering();
         }).then(function(resampled) {
           var audioData = resampled.getChannelData(0);
-          var opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true };
+          var opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true,
+                       initial_prompt: '以下是繁體中文（台灣用語）的會議記錄。' };
           if (lang !== 'auto') opts.language = lang;
+          else opts.language = 'zh';
           return pipe(audioData, opts);
         });
       }).then(function(result) {
@@ -801,6 +803,20 @@ function runWhisperOnChunks() {
             out += ts + c.text.trim() + '\n';
           });
         } else { out = (result.text || '').trim() + '\n'; }
+
+        // 幻覺偵測：單一字重複超過35%代表識別失敗
+        var clean = out.replace(/[\s\n\r]/g, '');
+        if (clean.length >= 8) {
+          var freq = {};
+          for (var ci = 0; ci < clean.length; ci++) freq[clean[ci]] = (freq[clean[ci]]||0)+1;
+          var maxF = 0;
+          for (var k in freq) { if (freq[k] > maxF) maxF = freq[k]; }
+          if (maxF / clean.length > 0.35) {
+            pt.textContent = '⚠️ 語言偵測失敗，請改選「中文」再試';
+            toast('⚠️ 輸出異常（重複字元），請將語言選「中文」後重新轉錄', 5000);
+            return;
+          }
+        }
 
         finalTx += out;
         syncTx();
@@ -825,105 +841,107 @@ function startRec() {
     setStatus('', '❌ 此瀏覽器不支援即時識別，請改用 Whisper 模式');
     return;
   }
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    setStatus('', '❌ 瀏覽器不支援麥克風存取');
-    return;
+
+  var restartCount = 0;
+
+  function buildRecognition() {
+    var r = new SR();
+    r.lang = document.getElementById('liveLang').value;
+    r.continuous = true;
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+
+    r.onstart = function() {
+      restartCount = 0;
+      setStatus('rec', '錄音中，正在識別...');
+    };
+
+    r.onresult = function(e) {
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        var tx = e.results[i][0].transcript.trim();
+        if (e.results[i].isFinal && tx) {
+          var ts = document.getElementById('chkTimestamp').checked ? '[' + fmt(elapsed) + '] ' : '';
+          var sp = document.getElementById('chkSpeaker').checked ? '發言者' + (speakerIdx+1) + '：' : '';
+          var nl = document.getElementById('chkNewline').checked ? '\n' : ' ';
+          finalTx += ts + sp + tx + nl;
+          if (document.getElementById('chkSpeaker').checked) speakerIdx = (speakerIdx + 1) % 4;
+          syncTx();
+        }
+      }
+    };
+
+    r.onerror = function(e) {
+      if (e.error === 'aborted') return;
+      if (e.error === 'no-speech') return;
+      if (e.error === 'network') { setStatus('rec', '⚠️ 網路不穩，重試中...'); return; }
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        setStatus('', '❌ 麥克風權限被拒絕，請在瀏覽器設定允許');
+        isRec = false; stopRec(); return;
+      }
+      setStatus('rec', '識別錯誤(' + e.error + ')，重試中...');
+    };
+
+    r.onend = function() {
+      if (!isRec || isPaused) return;
+      restartCount++;
+      var delay = Math.min(200 + restartCount * 30, 600);
+      setTimeout(function() {
+        if (!isRec || isPaused) return;
+        try {
+          recognition = buildRecognition();
+          recognition.start();
+        } catch(err) {
+          setTimeout(function() {
+            if (!isRec || isPaused) return;
+            try { recognition = buildRecognition(); recognition.start(); } catch(e2) {}
+          }, 800);
+        }
+      }, delay);
+    };
+
+    return r;
   }
 
-  navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
-    micStream = stream;
-    initAudio(stream);
-
-    var restartCount = 0;
-
-    function buildRecognition() {
-      var r = new SR();
-      r.lang = document.getElementById('liveLang').value;
-      r.continuous = true;
-      r.interimResults = true;
-      r.maxAlternatives = 1;
-
-      r.onstart = function() {
-        restartCount = 0;
-        setStatus('rec', '錄音中，正在識別...');
-      };
-
-      r.onresult = function(e) {
-        for (var i = e.resultIndex; i < e.results.length; i++) {
-          var tx = e.results[i][0].transcript.trim();
-          if (e.results[i].isFinal && tx) {
-            var ts = document.getElementById('chkTimestamp').checked ? '[' + fmt(elapsed) + '] ' : '';
-            var sp = document.getElementById('chkSpeaker').checked ? '發言者' + (speakerIdx+1) + '：' : '';
-            var nl = document.getElementById('chkNewline').checked ? '\n' : ' ';
-            finalTx += ts + sp + tx + nl;
-            if (document.getElementById('chkSpeaker').checked) speakerIdx = (speakerIdx + 1) % 4;
-            syncTx();
-          }
-        }
-      };
-
-      r.onerror = function(e) {
-        if (e.error === 'aborted') return;
-        if (e.error === 'no-speech') return;
-        if (e.error === 'network') { setStatus('rec', '⚠️ 網路不穩，重試中...'); return; }
-        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-          setStatus('', '❌ 麥克風權限被拒絕，請在瀏覽器設定允許');
-          isRec = false; stopRec(); return;
-        }
-        setStatus('rec', '識別錯誤(' + e.error + ')，重試中...');
-      };
-
-      r.onend = function() {
-        if (!isRec || isPaused) return;
-        restartCount++;
-        var delay = Math.min(300 + restartCount * 50, 800);
-        setTimeout(function() {
-          if (!isRec || isPaused) return;
-          try {
-            recognition = buildRecognition();
-            recognition.start();
-          } catch(err) {
-            setTimeout(function() {
-              if (!isRec || isPaused) return;
-              try { recognition = buildRecognition(); recognition.start(); } catch(e2) {}
-            }, 1000);
-          }
-        }, delay);
-      };
-
-      return r;
-    }
-
-    recognition = buildRecognition();
-
-    // MediaRecorder for audio file saving
-    if (document.getElementById('chkSaveAudio').checked && window.MediaRecorder) {
-      audioChunks = [];
-      lastAudioBlob = null;
-      document.getElementById('audioResult').classList.remove('show');
-      var mimeType = '';
-      var types = ['audio/webm;codecs=opus','audio/webm','audio/ogg'];
-      for (var i = 0; i < types.length; i++) {
-        if (MediaRecorder.isTypeSupported(types[i])) { mimeType = types[i]; break; }
-      }
-      try {
-        mediaRecorder = new MediaRecorder(micStream, mimeType ? { mimeType: mimeType } : {});
-        mediaRecorder.ondataavailable = function(e) {
-          if (e.data && e.data.size > 0) audioChunks.push(e.data);
-        };
-        mediaRecorder.start(1000);
-      } catch(e) { mediaRecorder = null; }
-    }
-
+  // ★ Android 關鍵：先啟動 SpeechRecognition，才不會被 getUserMedia 搶麥克風
+  recognition = buildRecognition();
+  try {
     recognition.start();
-    isRec = true; isPaused = false;
-    startTimer();
-    uiRec(true);
-    setStatus('rec', '錄音中，正在識別...');
+  } catch(e) {
+    setStatus('', '❌ 無法啟動語音識別：' + e.message);
+    return;
+  }
+  isRec = true; isPaused = false;
+  startTimer();
+  uiRec(true);
+  setStatus('rec', '錄音中，正在識別...');
 
-  }).catch(function(e) {
-    setStatus('', '❌ 無法取得麥克風：' + e.message);
-  });
+  // 再非同步取麥克風做波形顯示 + 存音檔（失敗不影響識別）
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+      if (!isRec) { stream.getTracks().forEach(function(t){t.stop();}); return; }
+      micStream = stream;
+      initAudio(stream);
+      if (document.getElementById('chkSaveAudio').checked && window.MediaRecorder) {
+        audioChunks = [];
+        lastAudioBlob = null;
+        document.getElementById('audioResult').classList.remove('show');
+        var mimeType = '';
+        var types = ['audio/webm;codecs=opus','audio/webm','audio/ogg'];
+        for (var i = 0; i < types.length; i++) {
+          if (MediaRecorder.isTypeSupported(types[i])) { mimeType = types[i]; break; }
+        }
+        try {
+          mediaRecorder = new MediaRecorder(micStream, mimeType ? { mimeType: mimeType } : {});
+          mediaRecorder.ondataavailable = function(e) {
+            if (e.data && e.data.size > 0) audioChunks.push(e.data);
+          };
+          mediaRecorder.start(1000);
+        } catch(e) { mediaRecorder = null; }
+      }
+    }).catch(function() {
+      // 波形顯示無法使用，但識別仍正常運作
+    });
+  }
 }
 
 function stopRec() {
@@ -1135,8 +1153,10 @@ function doTranscribe() {
             audioData = Float32Array.from(audioData, function(v) { return Math.max(-1, Math.min(1, v)); });
           }
           pf.style.width = '90%';
-          var opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true };
+          var opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true,
+                       initial_prompt: '以下是繁體中文（台灣用語）的會議記錄。' };
           if (lang !== 'auto') opts.language = lang;
+          else opts.language = 'zh';
           return transcriber(audioData, opts);
         });
       }).then(function(result) {
