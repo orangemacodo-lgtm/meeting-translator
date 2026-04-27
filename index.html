@@ -1239,6 +1239,15 @@ function copyTx() {
   navigator.clipboard.writeText(v).then(function() { toast('已複製到剪貼板'); });
 }
 
+function clearTx() {
+  if (!document.getElementById('transcript').value.trim()) { toast('記錄已是空白'); return; }
+  if (!confirm('確定要清除所有會議記錄嗎？')) return;
+  finalTx = '';
+  speakerIdx = 0;
+  document.getElementById('transcript').value = '';
+  toast('已清除記錄');
+}
+
 function saveTxt() {
   var v = document.getElementById('transcript').value;
   if (!v.trim()) { toast('記錄為空'); return; }
