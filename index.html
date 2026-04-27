@@ -528,6 +528,8 @@ var selectedFile = null;
 var whisperCache = {};
 var mediaRecorder = null, audioChunks = [], lastAudioBlob = null;
 var recMode = 'live'; // 'live' | 'whisper'
+var wakeLock = null;
+var wasRecInBackground = false;
 var chunkInterval = null, chunkCount = 0, activeMime = '';
 
 // ──────────────────────────────────────────────
@@ -772,6 +774,7 @@ function startWhisperRec() {
     setStatus('', '❌ 瀏覽器不支援麥克風存取'); return;
   }
   navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+    acquireWakeLock();
     micStream = stream;
     initAudio(stream);
     audioChunks = []; lastAudioBlob = null; chunkCount = 0;
@@ -825,6 +828,7 @@ function startWhisperRec() {
 
 function stopWhisperRec() {
   isRec = false;
+  releaseWakeLock();
   stopTimer();
   if (chunkInterval) { clearInterval(chunkInterval); chunkInterval = null; }
   if (micStream) { micStream.getTracks().forEach(function(t) { t.stop(); }); micStream = null; }
@@ -941,6 +945,7 @@ function startRec() {
 
   // ★ 即時識別模式：完全不呼叫 getUserMedia，讓 SpeechRecognition 獨佔麥克風
   // （Android Chrome 只要有其他程序持有麥克風，識別就會靜默無輸出）
+  acquireWakeLock();
   recognition = buildRecognition();
   try {
     recognition.start();
@@ -957,6 +962,7 @@ function startRec() {
 
 function stopRec() {
   isRec = false; isPaused = false;
+  releaseWakeLock();
   if (recognition) { recognition.abort(); recognition = null; }
 
   // 停止 MediaRecorder — 先存好 mimeType，避免 null 參照錯誤
@@ -1269,6 +1275,23 @@ function saveAudio() {
   toast('音檔已下載');
 }
 
+
+function acquireWakeLock() {
+  if ('wakeLock' in navigator) {
+    navigator.wakeLock.request('screen').then(function(wl) {
+      wakeLock = wl;
+      wakeLock.addEventListener('release', function() { wakeLock = null; });
+    }).catch(function(e) { /* 裝置不支援或已拒絕，靜默略過 */ });
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLock) {
+    wakeLock.release().catch(function(){});
+    wakeLock = null;
+  }
+}
+
 var toastTimer;
 function toast(msg, dur) {
   dur = dur || 2600;
@@ -1278,6 +1301,61 @@ function toast(msg, dur) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(function() { el.classList.remove('show'); }, dur);
 }
+document.addEventListener('visibilitychange', function() {
+  if (document.visibilityState === 'hidden') {
+    // 切到背景：記錄當時的錄音狀態
+    if (isRec) wasRecInBackground = true;
+  } else {
+    // 回到前景
+    if (wasRecInBackground && isRec) {
+      // 重新取得螢幕鎖
+      if (!wakeLock) acquireWakeLock();
+
+      // 即時識別模式：SpeechRecognition 在背景必定中斷，回來要重啟
+      if (recMode === 'live') {
+        setTimeout(function() {
+          if (!isRec || isPaused) return;
+          try {
+            if (recognition) { try { recognition.abort(); } catch(e2) {} }
+            var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (SR) {
+              recognition = new SR();
+              recognition.lang = document.getElementById('liveLang').value;
+              recognition.continuous = true;
+              recognition.interimResults = false;
+              recognition.maxAlternatives = 1;
+              recognition.onresult = function(e) {
+                for (var i = e.resultIndex; i < e.results.length; i++) {
+                  if (!e.results[i].isFinal) continue;
+                  var tx = e.results[i][0].transcript.trim();
+                  if (!tx) continue;
+                  var ts = document.getElementById('chkTimestamp').checked ? '[' + fmt(elapsed) + '] ' : '';
+                  var sp = document.getElementById('chkSpeaker').checked ? '發言者' + (speakerIdx+1) + '：' : '';
+                  var nl = document.getElementById('chkNewline').checked ? '\n' : ' ';
+                  finalTx += ts + sp + tx + nl;
+                  if (document.getElementById('chkSpeaker').checked) speakerIdx = (speakerIdx + 1) % 4;
+                  syncTx();
+                }
+              };
+              recognition.onend = function() {
+                if (!isRec || isPaused) return;
+                try { recognition = new SR(); recognition.lang = document.getElementById('liveLang').value;
+                  recognition.continuous = true; recognition.interimResults = false;
+                  recognition.onend = this.onend; recognition.onresult = this.onresult;
+                  recognition.start();
+                } catch(e3) {}
+              };
+              recognition.start();
+              setStatus('rec', '🔄 回到前景，恢復識別中...');
+            }
+          } catch(e) { setStatus('rec', '錄音中，正在識別...'); }
+        }, 300);
+      }
+      // Whisper 模式：MediaRecorder 在背景通常繼續錄，不需額外處理
+    }
+    wasRecInBackground = false;
+  }
+});
 window.addEventListener('resize', function() {
   var c = document.getElementById('viz');
   if (c) { c.width = c.offsetWidth; }
