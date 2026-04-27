@@ -111,6 +111,16 @@ input[type=range]::-moz-range-thumb{
 /* ---- Visualizer ---- */
 #viz{width:100%;height:72px;border-radius:var(--r-sm);background:var(--surface2);display:block}
 
+/* ---- Mode Toggle ---- */
+.mode-row{display:flex;gap:4px;margin-bottom:10px;background:var(--surface2);border-radius:var(--r-sm);padding:3px}
+.mode-btn{
+  flex:1;padding:7px 6px;border:none;border-radius:4px;cursor:pointer;
+  font-size:0.82rem;font-weight:500;background:transparent;color:var(--text2);transition:all .18s;
+}
+.mode-btn.on{background:var(--accent);color:#fff;box-shadow:0 1px 6px var(--accent-glow)}
+.whisper-prog{display:none;margin-top:8px}
+.whisper-prog.show{display:block}
+
 /* ---- Record Controls ---- */
 .rec-row{display:flex;align-items:center;justify-content:center;gap:16px;padding:10px 0}
 .btn-rec{
@@ -279,8 +289,14 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
 
 <!-- ============ Live Recording Panel ============ -->
 <div class="card" id="panel-live">
+  <!-- 模式切換 -->
+  <div class="mode-row">
+    <button class="mode-btn on" id="modeBtnLive" onclick="setRecMode('live')">⚡ 即時識別（Chrome）</button>
+    <button class="mode-btn" id="modeBtnWhisper" onclick="setRecMode('whisper')">🤖 Whisper 離線（全裝置）</button>
+  </div>
+
   <div class="compat-banner" id="compatBanner">
-    ⚠️ 即時語音識別需要 Chrome 或 Edge 瀏覽器。目前瀏覽器不支援，請改用「上傳音檔」功能。
+    ⚠️ 目前瀏覽器不支援即時識別，已自動切換為 Whisper 離線模式。
   </div>
 
   <div class="ctrl-row">
@@ -338,6 +354,37 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
   <div class="status-row">
     <div class="dot" id="dot"></div>
     <span id="statusTxt">點擊紅色按鈕開始錄音</span>
+  </div>
+
+  <!-- Whisper 模式選項 -->
+  <div id="whisperModeOpts" style="display:none;margin-bottom:8px">
+    <div class="ctrl-row">
+      <div class="ctrl-group">
+        <div class="ctrl-label">🤖 Whisper 模型</div>
+        <select id="liveWhisperModel">
+          <option value="Xenova/whisper-tiny">Tiny（最快，~75MB）</option>
+          <option value="Xenova/whisper-base" selected>Base（均衡，~140MB）</option>
+          <option value="Xenova/whisper-small">Small（高品質，~240MB）</option>
+        </select>
+      </div>
+      <div class="ctrl-group">
+        <div class="ctrl-label">🌐 錄音語言</div>
+        <select id="liveWhisperLang">
+          <option value="auto">自動偵測</option>
+          <option value="zh">中文</option>
+          <option value="en">English</option>
+          <option value="ja">日本語</option>
+          <option value="ko">한국어</option>
+          <option value="fr">Français</option>
+          <option value="de">Deutsch</option>
+          <option value="es">Español</option>
+        </select>
+      </div>
+    </div>
+    <div class="whisper-prog" id="liveWhisperProg">
+      <div class="prog-text" id="liveProgText">準備中...</div>
+      <div class="prog-bg"><div class="prog-fill" id="liveProgFill"></div></div>
+    </div>
   </div>
 
   <div class="opt-row">
@@ -480,6 +527,7 @@ let finalTx = '', speakerIdx = 0;
 let selectedFile = null;
 let whisperCache = {};
 let mediaRecorder = null, audioChunks = [], lastAudioBlob = null;
+let recMode = 'live'; // 'live' | 'whisper'
 
 // ──────────────────────────────────────────────
 // Init
@@ -503,8 +551,23 @@ function checkCompat() {
   if (!SR) {
     document.getElementById('compatBanner').classList.add('show');
     document.getElementById('compatBadge').style.display = 'block';
-    document.getElementById('btnRec').disabled = true;
-    document.getElementById('statusTxt').textContent = '瀏覽器不支援語音識別，請使用上傳音檔功能';
+    setRecMode('whisper'); // 自動切換 Whisper 模式
+  }
+}
+
+function setRecMode(mode) {
+  recMode = mode;
+  document.getElementById('modeBtnLive').classList.toggle('on', mode === 'live');
+  document.getElementById('modeBtnWhisper').classList.toggle('on', mode === 'whisper');
+  document.getElementById('whisperModeOpts').style.display = mode === 'whisper' ? 'block' : 'none';
+  const liveOnly = document.getElementById('liveLang').closest('.ctrl-group');
+  // 調整語言選擇顯示
+  document.getElementById('liveLang').closest('.ctrl-row').style.display = mode === 'live' ? 'flex' : 'none';
+  if (mode === 'whisper') {
+    document.getElementById('statusTxt').textContent = '點擊錄音，停止後自動轉成文字';
+    setStatus('', '點擊錄音，停止後自動轉成文字');
+  } else {
+    setStatus('', '點擊紅色按鈕開始錄音');
   }
 }
 
@@ -587,7 +650,133 @@ function clearViz() {
 // Recording
 // ──────────────────────────────────────────────
 async function toggleRec() {
-  isRec ? stopRec() : await startRec();
+  if (isRec) {
+    recMode === 'whisper' ? await stopWhisperRec() : stopRec();
+  } else {
+    recMode === 'whisper' ? await startWhisperRec() : await startRec();
+  }
+}
+
+// ── Whisper 錄音模式 ──
+async function startWhisperRec() {
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    await initAudio(micStream);
+  } catch(e) { setStatus('', '❌ 無法取得麥克風：' + e.message); return; }
+
+  audioChunks = [];
+  lastAudioBlob = null;
+  document.getElementById('audioResult').classList.remove('show');
+  const mimeType = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4',''].find(t => !t || MediaRecorder.isTypeSupported(t));
+  mediaRecorder = new MediaRecorder(micStream, mimeType ? { mimeType } : {});
+  mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
+  mediaRecorder.start(500);
+  isRec = true;
+  startTimer();
+  uiRec(true);
+  setStatus('rec', '錄音中（停止後自動轉成文字）');
+}
+
+async function stopWhisperRec() {
+  isRec = false;
+  stopTimer();
+
+  await new Promise(resolve => {
+    if (!mediaRecorder || mediaRecorder.state === 'inactive') { resolve(); return; }
+    mediaRecorder.onstop = resolve;
+    mediaRecorder.stop();
+  });
+  mediaRecorder = null;
+
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  gainNode = null; analyser = null;
+  clearViz();
+  uiRec(false);
+  setStatus('', '轉錄中，請稍候...');
+
+  if (audioChunks.length === 0) { setStatus('ok', '未收到音訊'); return; }
+
+  const mimeType = audioChunks[0].type || 'audio/webm';
+  lastAudioBlob = new Blob(audioChunks, { type: mimeType });
+  const url = URL.createObjectURL(lastAudioBlob);
+  document.getElementById('arPlayer').src = url;
+  document.getElementById('audioResult').classList.add('show');
+
+  // 顯示 Whisper 進度
+  const prog = document.getElementById('liveWhisperProg');
+  const pf = document.getElementById('liveProgFill');
+  const pt = document.getElementById('liveProgText');
+  prog.classList.add('show');
+  pf.style.width = '3%';
+
+  try {
+    const modelId = document.getElementById('liveWhisperModel').value;
+    const lang = document.getElementById('liveWhisperLang').value;
+    pt.textContent = '載入 Whisper 引擎...';
+
+    const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+    env.allowLocalModels = false;
+    env.useBrowserCache = true;
+
+    if (!whisperCache[modelId]) {
+      pt.textContent = `下載 ${modelId.split('/')[1]} 模型（首次需下載）...`;
+      whisperCache[modelId] = await pipeline('automatic-speech-recognition', modelId, {
+        quantized: true,
+        progress_callback: p => {
+          if (p.status === 'downloading' || p.status === 'progress') {
+            pf.style.width = (5 + (p.progress||0)*0.75) + '%';
+            pt.textContent = `下載模型：${Math.round(p.progress||0)}%`;
+          } else if (p.status === 'loading') { pf.style.width = '82%'; pt.textContent = '載入模型...'; }
+        }
+      });
+    }
+
+    pf.style.width = '85%'; pt.textContent = '解碼音訊並轉錄中...';
+
+    // 解碼音訊
+    const buf = await lastAudioBlob.arrayBuffer();
+    const tmpCtx = new AudioContext();
+    let decoded;
+    try { decoded = await tmpCtx.decodeAudioData(buf); } finally { tmpCtx.close(); }
+
+    const TARGET = 16000;
+    const offCtx = new OfflineAudioContext(1, Math.ceil(decoded.duration * TARGET), TARGET);
+    const src2 = offCtx.createBufferSource();
+    src2.buffer = decoded;
+    const gn2 = offCtx.createGain();
+    gn2.gain.value = parseFloat(document.getElementById('gainSlider').value);
+    src2.connect(gn2); gn2.connect(offCtx.destination); src2.start(0);
+    const resampled = await offCtx.startRendering();
+    const audioData = resampled.getChannelData(0);
+
+    const opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true };
+    if (lang !== 'auto') opts.language = lang;
+
+    const result = await whisperCache[modelId](audioData, opts);
+    pf.style.width = '100%'; pt.textContent = '✅ 轉錄完成！';
+
+    let out = '';
+    if (result.chunks && result.chunks.length) {
+      result.chunks.forEach(c => {
+        const ts = document.getElementById('chkTimestamp').checked && c.timestamp?.[0] != null
+          ? `[${fmt(Math.floor(c.timestamp[0]))}] ` : '';
+        out += ts + c.text.trim() + '\n';
+      });
+    } else { out = (result.text || '').trim() + '\n'; }
+
+    finalTx += out;
+    syncTx();
+    setStatus('ok', `轉錄完成，共 ${fmt(elapsed)}`);
+    elapsed = 0; document.getElementById('timer').textContent = '00:00';
+    setTimeout(() => prog.classList.remove('show'), 3000);
+
+  } catch(err) {
+    pt.textContent = '❌ ' + err.message;
+    pf.style.width = '0%';
+    setStatus('', '轉錄失敗：' + err.message);
+    console.error(err);
+  }
 }
 
 async function startRec() {
@@ -789,222 +978,4 @@ function loadFile(f) {
   const player = document.getElementById('audioPlayer');
   player.src = URL.createObjectURL(f);
   player.style.display = 'block';
-  document.getElementById('btnTranscribe').disabled = false;
-  toast('✅ 已選擇：' + f.name);
-}
-
-function fmtBytes(b) {
-  return b < 1048576 ? (b/1024).toFixed(1)+' KB' : (b/1048576).toFixed(1)+' MB';
-}
-
-// ──────────────────────────────────────────────
-// Whisper Transcription
-// ──────────────────────────────────────────────
-async function doTranscribe() {
-  if (!selectedFile) return;
-  const btn = document.getElementById('btnTranscribe');
-  btn.disabled = true;
-  btn.textContent = '⏳ 轉錄中...';
-
-  const pw = document.getElementById('progWrap');
-  const pf = document.getElementById('progFill');
-  const pt = document.getElementById('progText');
-  pw.classList.add('show');
-  pf.style.width = '0%';
-
-  try {
-    const modelId = document.getElementById('whisperModel').value;
-    const lang = document.getElementById('uploadLang').value;
-    const gain = parseFloat(document.getElementById('uploadGain').value);
-
-    pt.textContent = '載入 AI 引擎中...';
-    pf.style.width = '3%';
-
-    // Dynamic import
-    const mod = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
-    const { pipeline, env } = mod;
-    env.allowLocalModels = false;
-    env.useBrowserCache = true;
-
-    pt.textContent = `下載 ${modelId.split('/')[1]} 模型（首次需下載）...`;
-    pf.style.width = '5%';
-
-    if (!whisperCache[modelId]) {
-      whisperCache[modelId] = await pipeline('automatic-speech-recognition', modelId, {
-        quantized: true,
-        progress_callback: (p) => {
-          if (p.status === 'downloading' || p.status === 'progress') {
-            const pct = (p.progress || 0);
-            pf.style.width = (5 + pct * 0.75) + '%';
-            pt.textContent = `下載模型：${Math.round(pct)}%（${fmtBytes(p.loaded||0)} / ${fmtBytes(p.total||0)}）`;
-          } else if (p.status === 'loading') {
-            pf.style.width = '82%';
-            pt.textContent = '載入模型到記憶體中...';
-          }
-        }
-      });
-    }
-
-    const transcriber = whisperCache[modelId];
-    pf.style.width = '85%';
-    pt.textContent = '解碼音頻並轉錄中...';
-
-    // Decode audio
-    const buf = await selectedFile.arrayBuffer();
-    const tmpCtx = new AudioContext();
-    let decoded;
-    try { decoded = await tmpCtx.decodeAudioData(buf); }
-    catch(e) { throw new Error('音頻解碼失敗：' + e.message); }
-    finally { tmpCtx.close(); }
-
-    // Resample to 16kHz mono
-    const TARGET = 16000;
-    const offCtx = new OfflineAudioContext(1, Math.ceil(decoded.duration * TARGET), TARGET);
-    const src = offCtx.createBufferSource();
-    src.buffer = decoded;
-    // Apply gain for quiet audio
-    const gn = offCtx.createGain();
-    gn.gain.value = gain;
-    src.connect(gn);
-    gn.connect(offCtx.destination);
-    src.start(0);
-    const resampled = await offCtx.startRendering();
-    let audioData = resampled.getChannelData(0);
-
-    // Clamp to [-1,1] after gain
-    if (gain > 1) {
-      audioData = Float32Array.from(audioData, v => Math.max(-1, Math.min(1, v)));
-    }
-
-    pf.style.width = '90%';
-
-    // Run Whisper
-    const opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true };
-    if (lang !== 'auto') opts.language = lang;
-
-    const result = await transcriber(audioData, opts);
-    pf.style.width = '100%';
-    pt.textContent = '✅ 轉錄完成！';
-
-    // Format
-    let out = `\n── 檔案轉錄：${selectedFile.name} ──\n`;
-    if (result.chunks && result.chunks.length) {
-      result.chunks.forEach(c => {
-        const ts = c.timestamp && c.timestamp[0] != null ? `[${fmt(Math.floor(c.timestamp[0]))}] ` : '';
-        out += ts + c.text.trim() + '\n';
-      });
-    } else {
-      out += (result.text || '').trim() + '\n';
-    }
-
-    const ta = document.getElementById('transcript');
-    ta.value = (ta.value ? ta.value + '\n' : '') + out;
-    finalTx = ta.value;
-    ta.scrollTop = ta.scrollHeight;
-    updateWC();
-    toast('✅ 轉錄完成！');
-
-    setTimeout(() => pw.classList.remove('show'), 3000);
-
-  } catch(err) {
-    pt.textContent = '❌ 錯誤：' + err.message;
-    pf.style.width = '0%';
-    toast('❌ ' + err.message);
-    console.error(err);
-  }
-
-  btn.disabled = false;
-  btn.textContent = '✨ 開始轉錄';
-}
-
-// ──────────────────────────────────────────────
-// Export
-// ──────────────────────────────────────────────
-function copyTx() {
-  const v = document.getElementById('transcript').value;
-  if (!v.trim()) { toast('📝 記錄為空'); return; }
-  navigator.clipboard.writeText(v).then(() => toast('✅ 已複製到剪貼板'));
-}
-
-function saveTxt() {
-  const v = document.getElementById('transcript').value;
-  if (!v.trim()) { toast('📝 記錄為空'); return; }
-  const title = document.getElementById('mtgTitle').value || '會議記錄';
-  const date = new Date().toISOString().slice(0,10);
-  dl(v, `${title}_${date}.txt`, 'text/plain;charset=utf-8');
-  toast('✅ 已儲存 TXT');
-}
-
-function saveFull() {
-  const v = document.getElementById('transcript').value;
-  if (!v.trim()) { toast('📝 記錄為空'); return; }
-  const title = document.getElementById('mtgTitle').value || '會議記錄';
-  const date = document.getElementById('dateChip').textContent.replace('📅 ','');
-  const ppl = document.getElementById('mtgParticipants').value;
-  const sep = '═'.repeat(44);
-  const content = [
-    sep,
-    `  會議記錄  Meeting Minutes`,
-    sep,
-    `會議主題：${title}`,
-    `日期時間：${date}`,
-    `與會人員：${ppl || '（未填寫）'}`,
-    sep,
-    '',
-    v.trim(),
-    '',
-    sep,
-    `本記錄由 AI 會議記錄系統自動生成 · ${new Date().toLocaleString('zh-TW')}`,
-    sep
-  ].join('\n');
-  dl(content, `${title}_完整記錄_${new Date().toISOString().slice(0,10)}.txt`, 'text/plain;charset=utf-8');
-  toast('✅ 已儲存完整會議記錄');
-}
-
-function clearTx() {
-  if (!confirm('確定要清除所有記錄？此操作無法復原。')) return;
-  finalTx = ''; speakerIdx = 0;
-  document.getElementById('transcript').value = '';
-  updateWC();
-  toast('🗑 已清除');
-}
-
-function dl(text, name, type) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], {type}));
-  a.download = name;
-  a.click();
-}
-
-function saveAudio() {
-  if (!lastAudioBlob) { toast('尚無可儲存的音檔'); return; }
-  const title = document.getElementById('mtgTitle').value || '會議錄音';
-  const date = new Date().toISOString().slice(0,10);
-  const ext = lastAudioBlob.type.includes('ogg') ? 'ogg' : 'webm';
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(lastAudioBlob);
-  a.download = `${title}_${date}.${ext}`;
-  a.click();
-  toast('✅ 音檔已下載');
-}
-
-// ──────────────────────────────────────────────
-// Toast
-// ──────────────────────────────────────────────
-let toastTimer;
-function toast(msg, dur=2600) {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), dur);
-}
-
-// Resize canvas on window resize
-window.addEventListener('resize', () => {
-  const c = document.getElementById('viz');
-  if (c) { c.width = c.offsetWidth; }
-});
-</script>
-</body>
-</html>
+  document.getElementById('btnTranscribe').disabled = fa
