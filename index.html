@@ -783,44 +783,80 @@ async function startRec() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return;
 
+  // Android 相容：用最簡單的 constraints，避免 sampleRate 問題
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 48000 } });
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     await initAudio(micStream);
   } catch(e) {
     setStatus('', '❌ 無法取得麥克風：' + e.message);
     return;
   }
 
-  recognition = new SR();
-  recognition.lang = document.getElementById('liveLang').value;
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.maxAlternatives = 1;
+  let restartCount = 0;
 
-  recognition.onresult = (e) => {
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const tx = e.results[i][0].transcript.trim();
-      if (e.results[i].isFinal && tx) {
-        const ts = document.getElementById('chkTimestamp').checked ? `[${fmt(elapsed)}] ` : '';
-        const sp = document.getElementById('chkSpeaker').checked ? `發言者${speakerIdx+1}：` : '';
-        const nl = document.getElementById('chkNewline').checked ? '\n' : ' ';
-        finalTx += ts + sp + tx + nl;
-        if (document.getElementById('chkSpeaker').checked) speakerIdx = (speakerIdx + 1) % 4;
-        syncTx();
+  function buildRecognition() {
+    const r = new SR();
+    r.lang = document.getElementById('liveLang').value;
+    r.continuous = true;
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+
+    r.onstart = () => {
+      restartCount = 0;
+      setStatus('rec', '錄音中，正在識別...');
+    };
+
+    r.onresult = (e) => {
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const tx = e.results[i][0].transcript.trim();
+        if (e.results[i].isFinal && tx) {
+          const ts = document.getElementById('chkTimestamp').checked ? `[${fmt(elapsed)}] ` : '';
+          const sp = document.getElementById('chkSpeaker').checked ? `發言者${speakerIdx+1}：` : '';
+          const nl = document.getElementById('chkNewline').checked ? '\n' : ' ';
+          finalTx += ts + sp + tx + nl;
+          if (document.getElementById('chkSpeaker').checked) speakerIdx = (speakerIdx + 1) % 4;
+          syncTx();
+        }
       }
-    }
-  };
+    };
 
-  recognition.onerror = (e) => {
-    if (['no-speech','aborted'].includes(e.error)) return;
-    setStatus('', '識別錯誤：' + e.error);
-  };
+    r.onerror = (e) => {
+      if (e.error === 'aborted') return;
+      if (e.error === 'no-speech') return; // Android 常見，正常重啟即可
+      if (e.error === 'network') {
+        setStatus('rec', '⚠️ 網路不穩，重試中...');
+        return;
+      }
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        setStatus('', '❌ 麥克風權限被拒絕，請在瀏覽器設定允許');
+        isRec = false; stopRec(); return;
+      }
+      setStatus('rec', `識別錯誤(${e.error})，重試中...`);
+    };
 
-  recognition.onend = () => {
-    if (isRec && !isPaused) {
-      setTimeout(() => { try { recognition.start(); } catch(e) {} }, 150);
-    }
-  };
+    // Android 重啟邏輯：加長延遲，最多重試 999 次
+    r.onend = () => {
+      if (!isRec || isPaused) return;
+      restartCount++;
+      const delay = Math.min(300 + restartCount * 50, 800); // 300ms 起步，最長 800ms
+      setTimeout(() => {
+        if (!isRec || isPaused) return;
+        try {
+          recognition = buildRecognition();
+          recognition.start();
+        } catch(err) {
+          setTimeout(() => {
+            if (!isRec || isPaused) return;
+            try { recognition = buildRecognition(); recognition.start(); } catch(e2) {}
+          }, 1000);
+        }
+      }, delay);
+    };
+
+    return r;
+  }
+
+  recognition = buildRecognition();
 
   // 啟動 MediaRecorder 錄製音檔
   if (document.getElementById('chkSaveAudio').checked && window.MediaRecorder) {
@@ -839,7 +875,7 @@ async function startRec() {
   isRec = true; isPaused = false;
   startTimer();
   uiRec(true);
-  setStatus('rec', '錄音中...');
+  setStatus('rec', '錄音中，正在識別...');
 }
 
 function stopRec() {
@@ -878,14 +914,14 @@ function togglePause() {
   if (!isRec) return;
   if (isPaused) {
     isPaused = false;
-    try { recognition.start(); } catch(e) {}
     if (mediaRecorder && mediaRecorder.state === 'paused') mediaRecorder.resume();
+    // onend 會自動重啟 recognition
     startTimer();
-    setStatus('rec', '錄音中...');
+    setStatus('rec', '錄音中，正在識別...');
     document.getElementById('btnPause').textContent = '⏸ 暫停';
   } else {
     isPaused = true;
-    recognition.abort();
+    if (recognition) recognition.abort();
     if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.pause();
     stopTimer();
     setStatus('', '已暫停');
@@ -951,31 +987,4 @@ function updateWC() {
   document.getElementById('wordCount').textContent = v.replace(/\s/g,'').length + ' 字';
 }
 
-// ──────────────────────────────────────────────
-// Drag & Drop
-// ──────────────────────────────────────────────
-function setupDnD() {
-  const dz = document.getElementById('dropZone');
-  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
-  dz.addEventListener('dragleave', () => dz.classList.remove('over'));
-  dz.addEventListener('drop', e => {
-    e.preventDefault(); dz.classList.remove('over');
-    const f = e.dataTransfer.files[0];
-    if (f) loadFile(f);
-  });
-}
-
-function onFileSelect(e) {
-  const f = e.target.files[0];
-  if (f) loadFile(f);
-}
-
-function loadFile(f) {
-  selectedFile = f;
-  document.getElementById('fiName').textContent = f.name;
-  document.getElementById('fiSize').textContent = fmtBytes(f.size);
-  document.getElementById('fileInfo').classList.add('show');
-  const player = document.getElementById('audioPlayer');
-  player.src = URL.createObjectURL(f);
-  player.style.display = 'block';
-  document.getElementById('btnTranscribe').disabled = fa
+// ───────────�
