@@ -720,6 +720,7 @@ function transcribeBlob(blob, pipe, segLabel, isFinal) {
       task: 'transcribe',
       chunk_length_s: 30, stride_length_s: 3,
       return_timestamps: false,
+      condition_on_previous_text: false,
       initial_prompt: '以下是繁體中文（台灣用語）的會議記錄。'
     };
     if (lang !== 'auto') opts.language = lang; else opts.language = 'zh';
@@ -729,17 +730,23 @@ function transcribeBlob(blob, pipe, segLabel, isFinal) {
     var out = (result.text || '').trim();
     if (!out) { pt.textContent = segLabel + '：無語音'; setTimeout(function() { prog.classList.remove('show'); }, 1500); return; }
 
-    // 幻覺偵測
+    // 幻覺偵測（單字重複 + 短語重複）
     var clean = out.replace(/\s/g, '');
+    var isHallucination = false;
     if (clean.length >= 8) {
+      // 1. 單字頻率 > 35%
       var freq = {};
       for (var ci = 0; ci < clean.length; ci++) freq[clean[ci]] = (freq[clean[ci]]||0)+1;
       var maxF = 0; for (var k in freq) if (freq[k] > maxF) maxF = freq[k];
-      if (maxF / clean.length > 0.35) {
-        pt.textContent = '⚠️ ' + segLabel + '：語言偵測失敗，請改選「中文」';
-        setTimeout(function() { prog.classList.remove('show'); }, 3000);
-        return;
-      }
+      if (maxF / clean.length > 0.35) isHallucination = true;
+      // 2. 短語重複：2~8字的詞組重複5次以上
+      if (!isHallucination && /(.{2,8})\1{4,}/.test(clean)) isHallucination = true;
+    }
+    if (isHallucination) {
+      pt.textContent = '⚠️ ' + segLabel + '：偵測到重複幻覺，已略過';
+      toast('⚠️ Whisper 產生重複幻覺，該段已跳過。可試調高麥克風增益或換 Small 模型', 5000);
+      setTimeout(function() { prog.classList.remove('show'); }, 3000);
+      return;
     }
 
     var ts = document.getElementById('chkTimestamp').checked ? '[' + fmt(elapsed) + '] ' : '';
@@ -1158,6 +1165,7 @@ function doTranscribe() {
           }
           pf.style.width = '90%';
           var opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true,
+                       condition_on_previous_text: false,
                        initial_prompt: '以下是繁體中文（台灣用語）的會議記錄。' };
           if (lang !== 'auto') opts.language = lang;
           else opts.language = 'zh';
@@ -1167,15 +1175,36 @@ function doTranscribe() {
         pf.style.width = '100%';
         pt.textContent = '轉錄完成！';
 
-        var out = '\n── 檔案轉錄：' + selectedFile.name + ' ──\n';
+        var rawChunks = [];
         if (result.chunks && result.chunks.length) {
           result.chunks.forEach(function(c) {
-            var ts = c.timestamp && c.timestamp[0] != null ? '[' + fmt(Math.floor(c.timestamp[0])) + '] ' : '';
-            out += ts + c.text.trim() + '\n';
+            rawChunks.push({ ts: c.timestamp && c.timestamp[0] != null ? '[' + fmt(Math.floor(c.timestamp[0])) + '] ' : '', text: c.text.trim() });
           });
         } else {
-          out += (result.text || '').trim() + '\n';
+          rawChunks.push({ ts: '', text: (result.text || '').trim() });
         }
+
+        // 幻覺過濾（單字 + 短語重複）
+        var filtered = rawChunks.filter(function(c) {
+          if (!c.text) return false;
+          var cl = c.text.replace(/\s/g, '');
+          if (cl.length < 4) return true;
+          var fq = {}; for (var ci = 0; ci < cl.length; ci++) fq[cl[ci]] = (fq[cl[ci]]||0)+1;
+          var mf = 0; for (var k in fq) if (fq[k] > mf) mf = fq[k];
+          if (mf / cl.length > 0.35) return false;
+          if (/(.{2,8})\1{4,}/.test(cl)) return false;
+          return true;
+        });
+
+        if (filtered.length === 0) {
+          pt.textContent = '⚠️ 全段偵測為幻覺，已略過';
+          toast('⚠️ 轉錄結果全為重複幻覺，建議換 Small/Medium 模型或調高增益', 5000);
+          setTimeout(function() { pw.classList.remove('show'); }, 3000);
+          return;
+        }
+
+        var out = '\n── 檔案轉錄：' + selectedFile.name + ' ──\n';
+        filtered.forEach(function(c) { out += c.ts + c.text + '\n'; });
 
         var ta = document.getElementById('transcript');
         ta.value = (ta.value ? ta.value + '\n' : '') + out;
@@ -1223,28 +1252,7 @@ function saveFull() {
   var content = [sep,'  會議記錄  Meeting Minutes',sep,
     '會議主題：'+title,'日期時間：'+date,'與會人員：'+(ppl||'（未填寫）'),sep,'',
     v.trim(),'',sep,
-    '本記錄由 AI 會議記錄系統自動生成 · '+new Date().toLocaleString('zh-TW'),sep
-  ].join('\n');
-  dl(content, title+'_完整記錄_'+new Date().toISOString().slice(0,10)+'.txt', 'text/plain;charset=utf-8');
-  toast('已儲存完整會議記錄');
-}
-
-function clearTx() {
-  if (!confirm('確定要清除所有記錄？此操作無法復原。')) return;
-  finalTx = ''; speakerIdx = 0;
-  document.getElementById('transcript').value = '';
-  updateWC();
-  toast('已清除');
-}
-
-function dl(text, name, type) {
-  var a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], {type: type}));
-  a.download = name;
-  a.click();
-}
-
-function saveAudio() {
+    '本記錄由 AI 會議記錄系統自動生成 · '+new Date().toLocaleString('zh-Tfunction saveAudio() {
   if (!lastAudioBlob) { toast('尚無可儲存的音檔'); return; }
   var title = document.getElementById('mtgTitle').value || '會議錄音';
   var date = new Date().toISOString().slice(0,10);
