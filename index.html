@@ -435,8 +435,8 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
       <select id="whisperModel">
         <option value="Xenova/whisper-tiny">Tiny（最快，~75MB）</option>
         <option value="Xenova/whisper-base">Base（均衡，~140MB）</option>
-        <option value="Xenova/whisper-small">Small（高品質，~240MB）</option>
-        <option value="Xenova/whisper-medium" selected>🏆 Medium（最精準無雲端，推薦！~770MB）</option>
+        <option value="Xenova/whisper-small">✅ Small（穩定+高品質，推薦！~240MB）</option>
+        <option value="Xenova/whisper-medium" selected>Medium（最精準但易出錯，~770MB）</option>
       </select>
     </div>
     <div class="ctrl-group">
@@ -507,6 +507,8 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
 
   <div style="text-align:center;font-size:0.75rem;color:var(--text3);margin-top:7px">
     首次使用需下載模型 · 下載後可離線使用 · 音訊完全在本機處理，不上傳
+    <br/>
+    <span style="color:var(--yellow);">💡 若出現 OrtRun 錯誤，請改用 Small 模型（更穩定）</span>
   </div>
 </div>
 
@@ -1008,9 +1010,9 @@ function actuallyTranscribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
     );
 
     if (isOrtError) {
-      console.warn('[OrtRun 警告] 模型張量形狀不匹配 - blob太小或音訊有問題');
-      pt.textContent = '⚠️ ' + segLabel + '：音訊處理失敗，已略過';
-      toast('⚠️ 音訊處理失敗，請調高麥克風增益', 3000);
+      console.warn('[OrtRun 警告] 模型張量形狀不匹配 - 音訊格式或質量問題');
+      pt.textContent = '⚠️ ' + segLabel + '：音訊格式問題，已略過';
+      toast('⚠️ OrtRun 錯誤 - 請改用 Small 模型或調高增益', 4000);
       pf.style.width = '0%';
       setTimeout(function() { prog.classList.remove('show'); }, 1000);
       // 🔄 繼續處理隊列
@@ -1492,7 +1494,7 @@ function fmtBytes(b) {
   return b < 1048576 ? (b/1024).toFixed(1)+' KB' : (b/1048576).toFixed(1)+' MB';
 }
 
-// 備用解碼：用 HTMLAudioElement 處理 WebM/Opus（Android decodeAudioData 不支援時）
+// 備用解碼：用 HTMLAudioElement 處理 M4A/WebM/Opus（更相容）
 function decodeAudioViaElement(file, gain, onProgress) {
   return new Promise(function(resolve, reject) {
     var url = URL.createObjectURL(file);
@@ -1501,23 +1503,41 @@ function decodeAudioViaElement(file, gain, onProgress) {
     var ctx, processor, gainNode, source;
     var buffers = [];
     var done = false;
+    var timeoutId = null;
 
     function finish() {
       if (done) return;
       done = true;
+      clearTimeout(timeoutId);
       try { if (processor) processor.disconnect(); } catch(e) {}
       try { if (gainNode) gainNode.disconnect(); } catch(e) {}
       try { if (source) source.disconnect(); } catch(e) {}
       if (ctx) ctx.close();
+      try { audio.pause(); } catch(e) {}
       URL.revokeObjectURL(url);
+
       var total = buffers.reduce(function(a, b) { return a + b.length; }, 0);
+      if (total === 0) {
+        reject(new Error('備用解碼得到空音訊'));
+        return;
+      }
+
       var result = new Float32Array(total);
       var offset = 0;
       buffers.forEach(function(b) { result.set(b, offset); offset += b.length; });
-      // 限幅
-      if (gain > 1) {
-        for (var i = 0; i < result.length; i++) result[i] = Math.max(-1, Math.min(1, result[i]));
+
+      // RMS 正規化 + 增益
+      var sum = 0;
+      for (var i = 0; i < result.length; i++) sum += result[i] * result[i];
+      var rms = Math.sqrt(sum / result.length);
+      var targetRMS = 0.15;
+      var scale = (rms > 0 ? targetRMS / rms : 1) * gain;
+
+      for (var i = 0; i < result.length; i++) {
+        result[i] = Math.max(-1, Math.min(1, result[i] * scale));
       }
+
+      console.log('[備用解碼] 成功，總樣本數:', total, '增益:', gain);
       resolve(result);
     }
 
@@ -1525,21 +1545,54 @@ function decodeAudioViaElement(file, gain, onProgress) {
       try {
         ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
         gainNode = ctx.createGain();
-        gainNode.gain.value = gain;
+        gainNode.gain.value = 1; // 已在後處理中應用增益
         processor = ctx.createScriptProcessor(8192, 1, 1);
         source = ctx.createMediaElementSource(audio);
         processor.onaudioprocess = function(e) {
-          buffers.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-          if (audio.duration && onProgress) onProgress(audio.currentTime / audio.duration);
+          var channelData = e.inputBuffer.getChannelData(0);
+          if (channelData.length > 0) {
+            buffers.push(new Float32Array(channelData));
+          }
+          if (audio.duration && onProgress) {
+            onProgress(Math.min(audio.currentTime / audio.duration, 0.99));
+          }
         };
         source.connect(gainNode);
         gainNode.connect(processor);
         processor.connect(ctx.destination);
-        audio.play().catch(function(e) { reject(e); });
-      } catch(e) { URL.revokeObjectURL(url); reject(e); }
+
+        // 10 秒超時保護
+        timeoutId = setTimeout(function() {
+          console.warn('[備用解碼] 超過 10 秒，強制完成');
+          finish();
+        }, 10000);
+
+        audio.play().catch(function(e) {
+          console.error('[備用解碼] play() 失敗:', e);
+          finish();
+        });
+      } catch(e) {
+        console.error('[備用解碼] 初始化失敗:', e);
+        URL.revokeObjectURL(url);
+        reject(e);
+      }
     };
-    audio.onended = function() { finish(); };
-    audio.onerror = function() { URL.revokeObjectURL(url); reject(new Error('音檔格式不支援，請轉換為 MP3 或 WAV 後再試')); };
+
+    audio.onended = function() {
+      console.log('[備用解碼] 音訊播放完成');
+      finish();
+    };
+
+    audio.onerror = function() {
+      console.error('[備用解碼] audio.onerror:', audio.error?.message || '未知錯誤');
+      URL.revokeObjectURL(url);
+      reject(new Error('音檔無法播放 - 格式或編碼問題'));
+    };
+
+    audio.onpause = function() {
+      console.log('[備用解碼] 音訊已暫停');
+    };
+
     audio.src = url;
   });
 }
@@ -1560,6 +1613,19 @@ function doTranscribe() {
   var lang = document.getElementById('uploadLang').value;
   var gain = parseFloat(document.getElementById('uploadGain').value);
 
+  // 🔧 M4A 檔案自動改用 Small 模型（避免 OrtRun 錯誤）
+  var fileName = selectedFile.name.toLowerCase();
+  if (fileName.endsWith('.m4a') || fileName.endsWith('.aac')) {
+    if (modelId !== 'Xenova/whisper-small') {
+      modelId = 'Xenova/whisper-small';
+      pt.textContent = '🔧 M4A 檔案偵測 - 自動改用 Small 模型以確保穩定性...';
+      console.log('[偵測] M4A 檔案，自動改用 Small 模型');
+      toast('🔧 M4A 檔案自動改用 Small 模型', 2500);
+      setTimeout(function() { continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain); }, 800);
+      return;
+    }
+  }
+
   // 🔄 如果即時模式還有轉錄在進行，等待完成
   if (isTranscribing || transcribeQueue.length > 0) {
     pt.textContent = '⏳ 等待即時轉錄完成（' + (transcribeQueue.length + (isTranscribing ? 1 : 0)) + ' 個任務）...';
@@ -1576,10 +1642,10 @@ function doTranscribe() {
     return;
   }
 
-  continueTranscribe(pw, pf, pt, btn, modelId, lang, gain);
+  continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain);
 }
 
-function continueTranscribe(pw, pf, pt, btn, modelId, lang, gain) {
+function continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain) {
   pt.textContent = '載入 AI 引擎中...';
   pf.style.width = '3%';
 
@@ -1617,6 +1683,20 @@ function continueTranscribe(pw, pf, pt, btn, modelId, lang, gain) {
 
       // 解碼音頻為 Float32Array@16kHz（含備用路徑）
       function decodeToFloat32() {
+        var fileName = selectedFile.name.toLowerCase();
+        var isM4A = fileName.endsWith('.m4a') || fileName.endsWith('.aac');
+
+        // 🔧 M4A 檔案直接用備用解碼（更相容）
+        if (isM4A) {
+          console.log('[M4A] 直接使用備用解碼方法（更相容）');
+          pt.textContent = '解碼 M4A 中（備用方法）...';
+          pf.style.width = '87%';
+          return decodeAudioViaElement(selectedFile, gain, function(prog) {
+            pt.textContent = '解碼音訊 ' + Math.round(prog * 100) + '%...';
+            pf.style.width = (87 + prog * 2) + '%';
+          });
+        }
+
         return selectedFile.arrayBuffer().then(function(buf) {
           var tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
           return tmpCtx.decodeAudioData(buf).then(function(decoded) {
@@ -1636,9 +1716,11 @@ function continueTranscribe(pw, pf, pt, btn, modelId, lang, gain) {
               return ad;
             });
           }).catch(function() {
-            // decodeAudioData 失敗（常見於 Android + WebM/Opus）→ 備用解碼
+            // decodeAudioData 失敗（常見於 Android + WebM）→ 備用解碼
             tmpCtx.close();
+            console.warn('[解碼] decodeAudioData 失敗，使用備用方法');
             pt.textContent = '備用解碼中，請稍候...';
+            pf.style.width = '85%';
             return decodeAudioViaElement(selectedFile, gain, function(prog) {
               pt.textContent = '解碼音訊 ' + Math.round(prog * 100) + '%...';
               pf.style.width = (85 + prog * 4) + '%';
@@ -1649,6 +1731,24 @@ function continueTranscribe(pw, pf, pt, btn, modelId, lang, gain) {
 
       return decodeToFloat32().then(function(audioData) {
           pf.style.width = '90%';
+
+          // 驗證解碼後的音訊
+          if (!audioData || audioData.length === 0) {
+            throw new Error('解碼得到空音訊，無法轉錄');
+          }
+
+          console.log('[解碼驗證] 音訊長度:', audioData.length, '樣本 (~' + (audioData.length / 16000).toFixed(1) + '秒)');
+
+          // 計算音訊的 RMS（檢測音量）
+          var sum = 0;
+          for (var i = 0; i < audioData.length; i++) sum += audioData[i] * audioData[i];
+          var rms = Math.sqrt(sum / audioData.length);
+          console.log('[音訊品質] RMS:', rms.toFixed(4), 'Peak:', Math.max(...audioData).toFixed(4));
+
+          if (rms < 0.001) {
+            console.warn('[警告] 音訊 RMS 極低，可能導致識別失敗');
+            toast('⚠️ 音訊音量太小，建議重新錄製', 3000);
+          }
 
           // 音頻增強：音量正規化 + 高通濾波去低頻噪音
           audioData = enhanceAudio(audioData);
