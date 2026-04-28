@@ -473,6 +473,18 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
     </div>
   </div>
 
+  <!-- 🧪 調試選項 -->
+  <div class="opt-row" style="margin-bottom:10px; border-top:1px solid var(--border); padding-top:10px">
+    <label class="opt-item">
+      <input type="checkbox" id="chkAudioEnhance" checked />
+      <span class="opt-label">🔧 音頻增強（濾波+壓縮+正規化）</span>
+    </label>
+    <label class="opt-item">
+      <input type="checkbox" id="chkDebugMode" />
+      <span class="opt-label">🧪 調試模式（顯示詳細日誌）</span>
+    </label>
+  </div>
+
   <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileIn').click()">
     <input type="file" id="fileIn" accept="audio/*,video/mp4,video/webm,video/ogg" onchange="onFileSelect(event)" />
     <div class="dz-icon">🎵</div>
@@ -1644,6 +1656,18 @@ function doTranscribe() {
   analyzeAudioProfile(selectedFile, pw, pf, pt, btn, lang);
 }
 
+// 🧪 調試序列配置（自動嘗試不同參數）
+var debugAttempts = [
+  { model: 'Xenova/whisper-tiny', gain: 2.5, enhance: true, name: 'Tiny + 2.5x + 增強' },
+  { model: 'Xenova/whisper-tiny', gain: 3.0, enhance: true, name: 'Tiny + 3.0x + 增強' },
+  { model: 'Xenova/whisper-base', gain: 2.0, enhance: true, name: 'Base + 2.0x + 增強' },
+  { model: 'Xenova/whisper-small', gain: 1.5, enhance: false, name: 'Small + 1.5x - 增強' },
+  { model: 'Xenova/whisper-small', gain: 2.5, enhance: false, name: 'Small + 2.5x - 增強' },
+  { model: 'Xenova/whisper-medium', gain: 1.0, enhance: true, name: 'Medium + 1.0x + 增強' }
+];
+var currentAttempt = 0;
+var debugResults = [];
+
 // 🧠 智能音頻分析函數
 function analyzeAudioProfile(file, pw, pf, pt, btn, lang) {
   var fileName = file.name.toLowerCase();
@@ -1744,6 +1768,20 @@ function startTranscribeWithProfile(file, pw, pf, pt, btn, lang, profile) {
 }
 
 function continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain) {
+  // 🧪 調試模式：使用調試序列中的參數
+  var debugMode = document.getElementById('chkDebugMode') ? document.getElementById('chkDebugMode').checked : false;
+  if (debugMode && currentAttempt < debugAttempts.length) {
+    var attemptConfig = debugAttempts[currentAttempt];
+    modelId = attemptConfig.model;
+    gain = attemptConfig.gain;
+
+    // 設定音頻增強開關
+    var enhanceCheckbox = document.getElementById('chkAudioEnhance');
+    if (enhanceCheckbox) enhanceCheckbox.checked = attemptConfig.enhance;
+
+    console.log('[調試模式] 嘗試 #' + (currentAttempt + 1) + '：' + attemptConfig.name);
+  }
+
   pt.textContent = '載入 AI 引擎中...';
   pf.style.width = '3%';
 
@@ -1810,7 +1848,18 @@ function continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain) {
             src.start(0);
             return offCtx.startRendering().then(function(r) {
               var ad = r.getChannelData(0);
-              if (gain > 1) ad = Float32Array.from(ad, function(v) { return Math.max(-1, Math.min(1, v)); });
+
+              // 🧪 調試模式：應用調試參數中的增益設定
+              var debugMode = document.getElementById('chkDebugMode') ? document.getElementById('chkDebugMode').checked : false;
+              var actualGain = gain;
+              if (debugMode && currentAttempt < debugAttempts.length) {
+                actualGain = debugAttempts[currentAttempt].gain;
+              }
+
+              if (actualGain > 1) {
+                ad = Float32Array.from(ad, function(v) { return Math.max(-1, Math.min(1, v * actualGain)); });
+              }
+              if (debugMode) console.log('[音頻處理] 增益已應用:', actualGain + 'x');
               return ad;
             });
           }).catch(function() {
@@ -1852,20 +1901,49 @@ function continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain) {
             toast('⚠️ 音訊音量太小，建議重新錄製', 3000);
           }
 
-          // 音頻增強：音量正規化 + 高通濾波去低頻噪音
-          audioData = enhanceAudio(audioData);
+          // 🧪 音頻增強：根據調試設定決定是否啟用
+          var enableAudioEnhance = document.getElementById('chkAudioEnhance') ? document.getElementById('chkAudioEnhance').checked : true;
+          var debugMode = document.getElementById('chkDebugMode') ? document.getElementById('chkDebugMode').checked : false;
+
+          if (enableAudioEnhance) {
+            if (debugMode) console.log('[音頻增強] 開始');
+            audioData = enhanceAudio(audioData);
+            if (debugMode) console.log('[音頻增強] 完成');
+          } else {
+            if (debugMode) console.log('[音頻增強] 已禁用');
+          }
+
+          if (debugMode) {
+            var sum = 0, peak = 0;
+            for (var i = 0; i < audioData.length; i++) {
+              var abs = Math.abs(audioData[i]);
+              sum += audioData[i] * audioData[i];
+              if (abs > peak) peak = abs;
+            }
+            var rms = Math.sqrt(sum / audioData.length);
+            console.log('[調試] 增強後 RMS:', rms.toFixed(4), 'Peak:', peak.toFixed(4));
+          }
+
+          // 🧪 調試模式下的激進參數，增加容錯能力
+          var debugMode = document.getElementById('chkDebugMode') ? document.getElementById('chkDebugMode').checked : false;
 
           var opts = {
             task: 'transcribe',
-            chunk_length_s: 10,
-            stride_length_s: 2,
+            chunk_length_s: debugMode ? 5 : 10,  // 調試模式用更小的片段
+            stride_length_s: debugMode ? 1 : 2,   // 調試模式重疊更多
             return_timestamps: true,
-            condition_on_previous_text: false,
+            condition_on_previous_text: debugMode ? false : false,  // 關閉上下文依賴以減少幻覺
             language: lang !== 'auto' ? lang : 'zh',
-            temperature: 0,
-            repetition_penalty: 1.5,
-            initial_prompt: '以下是繁體中文（台灣用語）的會議記錄。請逐字逐句準確轉錄，保留技術名詞、人名、地名。使用標準標點符號。'
+            temperature: debugMode ? 0.5 : 0,     // 調試模式用稍高溫度增加多樣性
+            repetition_penalty: debugMode ? 1.2 : 1.5,  // 調試模式降低重複懲罰
+            initial_prompt: '以下是繁體中文（台灣用語）的會議記錄。請逐字逐句準確轉錄，保留技術名詞、人名、地名。使用標準標點符號。如果不確定，寧可留空也不要猜測。',
+            no_timestamps: false
           };
+
+          if (debugMode) {
+            console.log('[Whisper 配置]', opts);
+            pt.textContent = '🧪 調試轉錄（激進參數）：' + modelId.split('/')[1];
+          }
           return transcriber(audioData, opts);
       }).then(function(result) {
         pf.style.width = '100%';
@@ -1892,8 +1970,41 @@ function continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain) {
           return true;
         });
 
+        // 🧪 調試模式：記錄結果
+        var debugMode = document.getElementById('chkDebugMode') ? document.getElementById('chkDebugMode').checked : false;
+        var resultLength = filtered.reduce(function(sum, c) { return sum + c.text.length; }, 0);
+        var resultQuality = resultLength > 50 ? '✅ 好' : resultLength > 10 ? '⚠️ 勉強' : '❌ 差';
+
+        if (debugMode && currentAttempt < debugAttempts.length) {
+          var attempt = debugAttempts[currentAttempt];
+          debugResults.push({
+            attempt: currentAttempt + 1,
+            config: attempt.name,
+            charCount: resultLength,
+            quality: resultQuality,
+            success: filtered.length > 0 && resultLength > 50
+          });
+          console.log('[調試結果 #' + (currentAttempt + 1) + '] ' + attempt.name + ' → ' + resultLength + '字 (' + resultQuality + ')');
+        }
+
         if (filtered.length === 0) {
           pt.textContent = '⚠️ 全段偵測為幻覺，已略過';
+
+          // 🧪 如果調試模式且還有更多嘗試，自動進行下一次
+          if (debugMode && currentAttempt < debugAttempts.length - 1) {
+            currentAttempt++;
+            var nextAttempt = debugAttempts[currentAttempt];
+            pt.textContent = '🔄 自動進行下一次嘗試 (' + (currentAttempt + 1) + '/' + debugAttempts.length + ')：' + nextAttempt.name;
+            pf.style.width = '10%';
+
+            // 設定參數後重新轉錄
+            setTimeout(function() {
+              // 模擬點擊重新開始
+              doTranscribe();
+            }, 1500);
+            return;
+          }
+
           toast('⚠️ 轉錄結果全為重複幻覺，建議換 Small/Medium 模型或調高增益', 5000);
           setTimeout(function() { pw.classList.remove('show'); }, 3000);
           return;
@@ -1928,10 +2039,23 @@ function continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain) {
           Promise.all(translationPromises).then(function() {
             var ta = document.getElementById('transcript');
             ta.value = (ta.value ? ta.value + '\n' : '') + out;
+
+            // 🧪 調試模式：追加調試摘要
+            var debugMode = document.getElementById('chkDebugMode') ? document.getElementById('chkDebugMode').checked : false;
+            if (debugMode && debugResults.length > 0) {
+              var debugSummary = '\n\n【🧪 調試摘要】\n';
+              debugSummary += '模型/參數組合測試結果：\n';
+              debugResults.forEach(function(r) {
+                debugSummary += '  #' + r.attempt + ' ' + r.config + ' → ' + r.charCount + '字 ' + r.quality + (r.success ? ' ✅' : '') + '\n';
+              });
+              debugSummary += '\n最佳配置：' + (debugResults[0] || {}).config + '\n';
+              ta.value += debugSummary;
+            }
+
             finalTx = ta.value;
             ta.scrollTop = ta.scrollHeight;
             updateWC();
-            toast('轉錄 + 翻譯完成！');
+            toast('轉錄' + (debugMode ? '（調試模式）' : '') + '完成！');
             setTimeout(function() { pw.classList.remove('show'); }, 3000);
           });
           return;
