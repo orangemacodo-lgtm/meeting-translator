@@ -529,7 +529,40 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
   <button class="btn-act" onclick="copyTx()">📋 複製</button>
   <button class="btn-act primary" onclick="saveTxt()">💾 儲存 TXT</button>
   <button class="btn-act" onclick="saveFull()">📄 完整記錄</button>
+  <button class="btn-act" onclick="generateAndShowSummary()">✨ 生成摘要</button>
   <button class="btn-act danger" onclick="clearTx()">🗑 清除</button>
+</div>
+
+<!-- Summary Panel -->
+<div class="card" id="summaryPanel" style="display:none">
+  <div class="tx-header">
+    <span class="tx-title">📊 會議摘要</span>
+    <span class="tx-meta" id="summaryMeta">-</span>
+  </div>
+
+  <!-- Summary Display Area -->
+  <div id="summaryContent" style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px">
+    <!-- Markdown Version -->
+    <div style="flex:1; min-width:300px">
+      <div style="font-size:0.8rem; color:var(--text2); margin-bottom:6px; font-weight:600">📋 Markdown 版本</div>
+      <textarea id="summaryMD" readonly style="width:100%; height:300px; font-size:0.85rem; font-family:monospace; background:var(--surface2); border:1px solid var(--border); border-radius:var(--r-sm); padding:8px; color:var(--text); resize:vertical"></textarea>
+    </div>
+
+    <!-- Plain Text Version -->
+    <div style="flex:1; min-width:300px">
+      <div style="font-size:0.8rem; color:var(--text2); margin-bottom:6px; font-weight:600">📝 純文字版本</div>
+      <textarea id="summaryTxt" readonly style="width:100%; height:300px; font-size:0.85rem; font-family:sans-serif; background:var(--surface2); border:1px solid var(--border); border-radius:var(--r-sm); padding:8px; color:var(--text); resize:vertical"></textarea>
+    </div>
+  </div>
+
+  <!-- Summary Actions -->
+  <div class="actions" style="gap:8px; flex-wrap:wrap">
+    <button class="btn-act" onclick="copySummaryMD()">📋 複製 MD</button>
+    <button class="btn-act" onclick="copySummaryTxt()">📋 複製文字</button>
+    <button class="btn-act primary" onclick="saveSummaryMD()">💾 儲存 .md</button>
+    <button class="btn-act primary" onclick="saveSummaryTxt()">💾 儲存 .txt</button>
+    <button class="btn-act danger" onclick="document.getElementById('summaryPanel').style.display='none'">✕ 關閉</button>
+  </div>
 </div>
 
 <div class="footer">即時錄音使用瀏覽器語音識別 · 檔案轉錄使用 OpenAI Whisper（本機運算，不上傳）</div>
@@ -1526,18 +1559,14 @@ function decodeAudioViaElement(file, gain, onProgress) {
       var offset = 0;
       buffers.forEach(function(b) { result.set(b, offset); offset += b.length; });
 
-      // RMS 正規化 + 增益
-      var sum = 0;
-      for (var i = 0; i < result.length; i++) sum += result[i] * result[i];
-      var rms = Math.sqrt(sum / result.length);
-      var targetRMS = 0.15;
-      var scale = (rms > 0 ? targetRMS / rms : 1) * gain;
-
-      for (var i = 0; i < result.length; i++) {
-        result[i] = Math.max(-1, Math.min(1, result[i] * scale));
+      // 簡單的增益應用（不做複雜的正規化）
+      if (gain > 1) {
+        for (var i = 0; i < result.length; i++) {
+          result[i] = Math.max(-1, Math.min(1, result[i] * gain));
+        }
       }
 
-      console.log('[備用解碼] 成功，總樣本數:', total, '增益:', gain);
+      console.log('[備用解碼] ✅ 成功，總樣本數:', total, '~' + (total / 16000).toFixed(1) + '秒');
       resolve(result);
     }
 
@@ -1613,17 +1642,15 @@ function doTranscribe() {
   var lang = document.getElementById('uploadLang').value;
   var gain = parseFloat(document.getElementById('uploadGain').value);
 
-  // 🔧 M4A 檔案自動改用 Small 模型（避免 OrtRun 錯誤）
+  // 🔧 M4A/AAC 檔案自動改用 Small 模型（最穩定）
   var fileName = selectedFile.name.toLowerCase();
   if (fileName.endsWith('.m4a') || fileName.endsWith('.aac')) {
-    if (modelId !== 'Xenova/whisper-small') {
-      modelId = 'Xenova/whisper-small';
-      pt.textContent = '🔧 M4A 檔案偵測 - 自動改用 Small 模型以確保穩定性...';
-      console.log('[偵測] M4A 檔案，自動改用 Small 模型');
-      toast('🔧 M4A 檔案自動改用 Small 模型', 2500);
-      setTimeout(function() { continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain); }, 800);
-      return;
-    }
+    modelId = 'Xenova/whisper-small'; // 強制改用 Small
+    pt.textContent = '🔧 M4A 檔案 → 自動改用 Small 模型（最穩定）';
+    console.log('[自動降級] M4A 檔案 → Small 模型');
+    toast('🔧 M4A 自動改用 Small 模型保證穩定', 2000);
+    setTimeout(function() { continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain); }, 600);
+    return;
   }
 
   // 🔄 如果即時模式還有轉錄在進行，等待完成
@@ -1913,6 +1940,521 @@ function saveAudio() {
   a.download = title + '_' + date + '.' + ext;
   a.click();
   toast('音檔已下載');
+}
+
+// ──────────────────────────────────────────────
+// 摘要生成系統（Week 3 C層）
+// ──────────────────────────────────────────────
+
+// 停用詞：需要過濾掉的常見詞彙
+// 🏥 醫療健康專用版本
+var stopwordsZH = {
+  // 基礎虛詞
+  '的': true, '了': true, '是': true, '在': true, '我': true, '你': true,
+  '他': true, '她': true, '這': true, '那': true, '有': true, '沒': true,
+  '很': true, '也': true, '就': true, '而': true, '和': true, '或': true,
+  '如果': true, '因為': true, '所以': true, '但是': true, '不過': true,
+  '對': true, '嗎': true, '呢': true, '啊': true, '哦': true, '呀': true,
+  '要': true, '會': true, '能': true, '可以': true, '應該': true, '可能': true,
+  '被': true, '給': true, '向': true, '從': true, '到': true, '由': true,
+
+  // 醫療通用詞（過於普遍，不提供信息）
+  '患者': true, '病人': true, '醫生': true, '醫師': true, '醫護': true,
+  '疾病': true, '症狀': true, '病情': true, '診斷': true, '治療': true,
+  '檢查': true, '檢驗': true, '檢查': true, '影像': true, '化驗': true,
+  '藥物': true, '用藥': true, '給藥': true, '給藥': true, '用藥': true,
+  '院': true, '科': true, '部門': true, '科室': true, '醫療': true,
+  '健康': true, '身體': true, '狀況': true, '狀態': true, '情況': true,
+  '表現': true, '表現': true, '呈現': true, '出現': true, '發現': true,
+  '需要': true, '進行': true, '實施': true, '開始': true, '開展': true,
+  '今天': true, '明天': true, '昨天': true, '時間': true, '週期': true,
+  '討論': true, '說': true, '提到': true, '提及': true, '提出': true,
+  '同意': true, '認為': true, '建議': true, '看': true, '認可': true
+};
+
+function extractKeywords(text, maxCount) {
+  maxCount = maxCount || 8;
+  // 分句、分詞（簡單方法：按標點和空格分割）
+  var sentences = text.match(/[^。！？；：\n]+/g) || [];
+  var wordFreq = {};
+
+  sentences.forEach(function(sent) {
+    // 簡單分詞：按字符分割（中文）+ 按空格分割（英文）
+    var words = sent.split(/[\s]+/);
+    words.forEach(function(w) {
+      w = w.trim();
+      if (!w || w.length < 2 || stopwordsZH[w]) return;
+      wordFreq[w] = (wordFreq[w] || 0) + 1;
+    });
+  });
+
+  // 排序：優先重複出現的詞彙 + 長度 (權重: 出現次數 * 長度)
+  var sorted = Object.keys(wordFreq)
+    .map(function(w) { return { word: w, freq: wordFreq[w], score: wordFreq[w] * w.length }; })
+    .sort(function(a, b) { return b.score - a.score; })
+    .slice(0, maxCount)
+    .map(function(item) { return item.word; });
+
+  return sorted;
+}
+
+// 決策/結論識別
+// 🏥 醫療健康場景優化版本
+function extractDecisions(text) {
+  var decisionPatterns = [
+    // 通用決策詞
+    /決定([:：]?\s*[^。！？\n]+)/g,
+    /同意([:：]?\s*[^。！？\n]+)/g,
+    /確定([:：]?\s*[^。！？\n]+)/g,
+    /通過([:：]?\s*[^。！？\n]+)/g,
+    /拒絕([:：]?\s*[^。！？\n]+)/g,
+    /批准([:：]?\s*[^。！？\n]+)/g,
+    /結論([:：]?\s*[^。！？\n]+)/g,
+
+    // 🏥 醫療專用決策詞
+    /診斷([:：]?\s*[^。！？\n]+)/g,           // 診斷結論
+    /建議([:：]?\s*[^。！？\n]+)/g,           // 治療建議
+    /實施([:：]?\s*[^。！？\n]+)/g,           // 實施治療方案
+    /採用([:：]?\s*[^。！？\n]+)/g,           // 採用方案
+    /處方([:：]?\s*[^。！？\n]+)/g,           // 用藥處方
+    /轉介([:：]?\s*[^。！？\n]+)/g,           // 轉介其他科室
+    /轉診([:：]?\s*[^。！？\n]+)/g,           // 轉診其他醫院
+    /複查([:：]?\s*[^。！？\n]+)/g,           // 複查計劃
+    /追蹤([:：]?\s*[^。！？\n]+)/g,           // 追蹤計劃
+    /禁忌([:：]?\s*[^。！？\n]+)/g,           // 禁忌事項
+    /風險([:：]?\s*[^。！？\n]+)/g,           // 風險評估
+    /預後([:：]?\s*[^。！？\n]+)/g,           // 預後評估
+    /會診([:：]?\s*[^。！？\n]+)/g,           // 會診決定
+    /同意施行([:：]?\s*[^。！？\n]+)/g,       // 同意施行手術/治療
+    /暫緩([:：]?\s*[^。！？\n]+)/g,           // 暫緩計劃
+    /停止([:：]?\s*[^。！？\n]+)/g            // 停止治療
+  ];
+
+  var decisions = [];
+  decisionPatterns.forEach(function(pattern) {
+    var matches = text.match(pattern) || [];
+    matches.forEach(function(m) {
+      var clean = m.replace(/^[^\s：:]*[：:]?\s*/, '').trim();
+      if (clean && decisions.indexOf(clean) === -1) {
+        decisions.push(clean);
+      }
+    });
+  });
+
+  return decisions;
+}
+
+// 方案 A：自動識別行動項（關鍵詞匹配）
+// 🏥 醫療健康場景優化版本
+function extractActionItemsAuto(text) {
+  var actionPatterns = [
+    // 通用行動詞
+    /需要(做|完成|提供)?[^。！？\n]+/g,
+    /應該(做|完成|提供)?[^。！？\n]+/g,
+    /要求[^。！？\n]+/g,
+    /負責[^。！？\n]+/g,
+    /完成[^。！？\n]+/g,
+    /準備[^。！？\n]+/g,
+    /執行[^。！？\n]+/g,
+    /待辦[^。！？\n]+/g,
+    /TODO[^。！？\n]*/gi,
+
+    // 🏥 醫療檢查/檢驗類
+    /進行?(血液|驗血|化驗|檢驗|檢查|超音波|X光|電腦|核磁|造影|內視|病理)[^。！？\n]+/g,
+    /安排?(檢查|檢驗|檢測|掃描|拍片)[^。！？\n]+/g,
+    /預約?(檢查|檢驗|複查|手術)[^。！？\n]+/g,
+
+    // 🏥 醫療用藥類
+    /開始(服用|使用|注射|施打)[^。！？\n]+/g,
+    /停止(服用|使用|注射|施打)[^。！？\n]+/g,
+    /調整(藥物|劑量|用藥)[^。！？\n]+/g,
+    /更換(藥物|方案)[^。！？\n]+/g,
+    /處方[^。！？\n]+/g,
+    /用藥[^。！？\n]+/g,
+
+    // 🏥 醫療複查/追蹤類
+    /複查(時間|日期)?[^。！？\n]+/g,
+    /追蹤[^。！？\n]+/g,
+    /定期(回診|複查|追蹤)[^。！？\n]+/g,
+    /回診[^。！？\n]+/g,
+
+    // 🏥 醫療轉介/會診類
+    /轉介[^。！？\n]+/g,
+    /轉診[^。！？\n]+/g,
+    /會診[^。！？\n]+/g,
+    /建議(轉介|轉診|會診)[^。！？\n]+/g,
+
+    // 🏥 醫療手術/治療類
+    /安排(手術|治療|手術)[^。！？\n]+/g,
+    /進行(手術|治療|介入)[^。！？\n]+/g,
+    /施行(手術|治療|麻醉)[^。！？\n]+/g,
+
+    // 🏥 醫療教育/衛教類
+    /衛教[^。！？\n]+/g,
+    /說明[^。！？\n]+/g,
+    /告知[^。！？\n]+/g,
+    /解釋[^。！？\n]+/g
+  ];
+
+  var items = [];
+  actionPatterns.forEach(function(pattern) {
+    var matches = text.match(pattern) || [];
+    matches.forEach(function(m) {
+      var clean = m.trim();
+      if (clean && items.indexOf(clean) === -1) {
+        items.push(clean);
+      }
+    });
+  });
+
+  return items;
+}
+
+// 方案 B：手工標記行動項（@...@ 語法）
+function extractActionItemsManual(text) {
+  var manualItems = [];
+  var pattern = /@([^@]+)@/g;
+  var match;
+  while ((match = pattern.exec(text)) !== null) {
+    var item = match[1].trim();
+    if (item && manualItems.indexOf(item) === -1) {
+      manualItems.push(item);
+    }
+  }
+  return manualItems;
+}
+
+// 🏥 時間識別：提取複查時間、用藥周期等
+function extractTimeframes(text) {
+  var timePatterns = [
+    // 相對時間
+    /今天|明天|後天/g,
+    /今天|這禮拜|這週|下\s?週/g,
+    /(\d+)\s?(天|日|週|周|月|個月|年)/g,
+    /(\d+)\s?-\s?(\d+)\s?(天|日|週|周|月)/g,
+    /立即|馬上|儘快|盡快|趕快/g,
+    /每\s?(天|日|週|周|月)/g,
+    /一\s?周\s?內|一\s?月\s?內/g
+  ];
+
+  var timeframes = [];
+  var seen = {};
+
+  text.split(/[。！？；\n]/g).forEach(function(sent) {
+    timePatterns.forEach(function(pattern) {
+      var matches = sent.match(pattern) || [];
+      matches.forEach(function(m) {
+        var clean = m.trim();
+        if (clean && !seen[clean]) {
+          timeframes.push(clean);
+          seen[clean] = true;
+        }
+      });
+    });
+  });
+
+  return timeframes.slice(0, 8); // 最多 8 個時間表達
+}
+
+// 主要摘要生成函數
+function generateSummary(fullTranscript) {
+  if (!fullTranscript || !fullTranscript.trim()) {
+    return { md: '（無會議內容）', txt: '（無會議內容）' };
+  }
+
+  var mtgTitle = document.getElementById('mtgTitle').value || '會議記錄';
+  var date = document.getElementById('dateChip').textContent.replace('📅 ','');
+
+  // 提取各部分內容
+  var keywords = extractKeywords(fullTranscript, 8);
+  var decisions = extractDecisions(fullTranscript);
+  var actionAuto = extractActionItemsAuto(fullTranscript);
+  var actionManual = extractActionItemsManual(fullTranscript);
+  var allActions = actionManual.concat(actionAuto);
+  var timeframes = extractTimeframes(fullTranscript); // 🏥 新增時間識別
+
+  // 生成 Markdown 版本
+  // 🏥 醫療健康場景特化版本
+  var mdLines = [];
+  mdLines.push('# ' + mtgTitle);
+  mdLines.push('');
+  mdLines.push('📅 **日期** ' + date);
+  mdLines.push('');
+  mdLines.push('---');
+  mdLines.push('');
+
+  // 關鍵話題 - 醫療場景下可能是病症、診斷等
+  mdLines.push('## 📌 臨床重點 / 關鍵話題');
+  if (keywords.length > 0) {
+    mdLines.push('');
+    keywords.forEach(function(kw) {
+      // 嘗試識別醫學術語
+      var icon = /症|病|診|檢查|檢驗/.test(kw) ? '🔬' : '📝';
+      mdLines.push(icon + ' ' + kw);
+    });
+  } else {
+    mdLines.push('_（未檢測到關鍵話題）_');
+  }
+  mdLines.push('');
+
+  // 決策/結論 - 醫療場景下是診療決定
+  mdLines.push('## ✅ 診療決策 / 治療方案');
+  if (decisions.length > 0) {
+    mdLines.push('');
+    decisions.forEach(function(dec) {
+      var icon = /轉介|轉診|會診/.test(dec) ? '🔀' : /手術|治療|實施/.test(dec) ? '⚕️' : '✓';
+      mdLines.push(icon + ' ' + dec);
+    });
+  } else {
+    mdLines.push('_（無明確決策記錄）_');
+  }
+  mdLines.push('');
+
+  // 行動項 - 醫療場景下分類（檢查、用藥、複查、轉介等）
+  mdLines.push('## 📋 待辦事項 / 後續追蹤');
+  if (allActions.length > 0) {
+    mdLines.push('');
+    mdLines.push('> **標註** (@...@) 的項目 · **自動** 提取的關鍵句');
+    mdLines.push('');
+
+    // 分類展示
+    var checkups = [], medications = [], followups = [], referrals = [], others = [];
+
+    var allItemsWithSource = [];
+    actionManual.forEach(function(a) { allItemsWithSource.push({txt: a, src: '手動'}); });
+    actionAuto.forEach(function(a) {
+      if (actionManual.indexOf(a) === -1) {
+        allItemsWithSource.push({txt: a, src: '自動'});
+      }
+    });
+
+    allItemsWithSource.forEach(function(item) {
+      var txt = item.txt;
+      var src = item.src;
+      var badge = src === '手動' ? '🔖' : '🤖';
+
+      if (/檢查|檢驗|檢測|掃描|拍片|血液|驗血|超音波|X光|電腦|核磁|造影|內視|病理/.test(txt)) {
+        checkups.push(badge + ' ' + txt);
+      } else if (/用藥|服用|注射|施打|處方|停止|調整/.test(txt)) {
+        medications.push(badge + ' ' + txt);
+      } else if (/複查|追蹤|回診|定期|復診/.test(txt)) {
+        followups.push(badge + ' ' + txt);
+      } else if (/轉介|轉診|會診|建議轉/.test(txt)) {
+        referrals.push(badge + ' ' + txt);
+      } else {
+        others.push(badge + ' ' + txt);
+      }
+    });
+
+    if (checkups.length > 0) {
+      mdLines.push('### 🔬 檢查 / 檢驗');
+      checkups.forEach(function(c) { mdLines.push('- [ ] ' + c); });
+      mdLines.push('');
+    }
+    if (medications.length > 0) {
+      mdLines.push('### 💊 用藥 / 治療');
+      medications.forEach(function(m) { mdLines.push('- [ ] ' + m); });
+      mdLines.push('');
+    }
+    if (followups.length > 0) {
+      mdLines.push('### 📅 複查 / 追蹤');
+      followups.forEach(function(f) {
+        // 在複查項目中標示時間提示
+        var timeHint = '';
+        if (/(今天|明天|後天|立即|馬上|儘快)/.test(fullTranscript)) {
+          if (/今天|明天|後天|立即|馬上|儘快/.test(f)) {
+            timeHint = ' ⏰ **緊急**';
+          }
+        }
+        mdLines.push('- [ ] ' + f + timeHint);
+      });
+      mdLines.push('');
+    }
+    if (referrals.length > 0) {
+      mdLines.push('### 🔀 轉介 / 會診');
+      referrals.forEach(function(r) { mdLines.push('- [ ] ' + r); });
+      mdLines.push('');
+    }
+    if (others.length > 0) {
+      mdLines.push('### 📌 其他事項');
+      others.forEach(function(o) { mdLines.push('- [ ] ' + o); });
+      mdLines.push('');
+    }
+  } else {
+    mdLines.push('_（無行動項）_');
+  }
+  mdLines.push('');
+
+  // 時間標記 - 醫療場景下的時間敏感信息
+  if (timeframes.length > 0) {
+    mdLines.push('---');
+    mdLines.push('## ⏰ 時間標記 / 期限');
+    mdLines.push('');
+    timeframes.forEach(function(tf) {
+      var icon = /立即|馬上|儘快|今天/.test(tf) ? '🔴' : /明天|後天|一?.?週/.test(tf) ? '🟡' : '🟢';
+      mdLines.push(icon + ' ' + tf);
+    });
+    mdLines.push('');
+  }
+
+  mdLines.push('---');
+  mdLines.push('_由 AI 會議記錄系統自動生成 · ' + new Date().toLocaleString('zh-TW') + '_');
+
+  // 生成純文字版本（去掉 Markdown 符號）
+  // 🏥 醫療健康場景特化版本
+  var txtLines = [];
+  txtLines.push(mtgTitle);
+  txtLines.push('');
+  txtLines.push('日期：' + date);
+  txtLines.push('');
+  txtLines.push('========== 臨床重點 / 關鍵話題 ==========');
+  if (keywords.length > 0) {
+    keywords.forEach(function(kw, idx) { txtLines.push((idx+1) + '. ' + kw); });
+  } else {
+    txtLines.push('（未檢測到關鍵話題）');
+  }
+  txtLines.push('');
+
+  txtLines.push('========== 診療決策 / 治療方案 ==========');
+  if (decisions.length > 0) {
+    decisions.forEach(function(dec, idx) { txtLines.push((idx+1) + '. ' + dec); });
+  } else {
+    txtLines.push('（無明確決策記錄）');
+  }
+  txtLines.push('');
+
+  txtLines.push('========== 待辦事項 / 後續追蹤 ==========');
+  if (allActions.length > 0) {
+    var checkups = [], medications = [], followups = [], referrals = [], others = [];
+
+    var allItemsWithSource = [];
+    actionManual.forEach(function(a) { allItemsWithSource.push({txt: a, src: '手動'}); });
+    actionAuto.forEach(function(a) {
+      if (actionManual.indexOf(a) === -1) {
+        allItemsWithSource.push({txt: a, src: '自動'});
+      }
+    });
+
+    allItemsWithSource.forEach(function(item) {
+      var txt = item.txt;
+      var src = item.src;
+      var badge = '[' + src + '] ';
+
+      if (/檢查|檢驗|檢測|掃描|拍片|血液|驗血|超音波|X光|電腦|核磁|造影|內視|病理/.test(txt)) {
+        checkups.push(badge + txt);
+      } else if (/用藥|服用|注射|施打|處方|停止|調整/.test(txt)) {
+        medications.push(badge + txt);
+      } else if (/複查|追蹤|回診|定期|復診/.test(txt)) {
+        followups.push(badge + txt);
+      } else if (/轉介|轉診|會診|建議轉/.test(txt)) {
+        referrals.push(badge + txt);
+      } else {
+        others.push(badge + txt);
+      }
+    });
+
+    if (checkups.length > 0) {
+      txtLines.push('【檢查 / 檢驗】');
+      checkups.forEach(function(c) { txtLines.push('☐ ' + c); });
+      txtLines.push('');
+    }
+    if (medications.length > 0) {
+      txtLines.push('【用藥 / 治療】');
+      medications.forEach(function(m) { txtLines.push('☐ ' + m); });
+      txtLines.push('');
+    }
+    if (followups.length > 0) {
+      txtLines.push('【複查 / 追蹤】');
+      followups.forEach(function(f) { txtLines.push('☐ ' + f); });
+      txtLines.push('');
+    }
+    if (referrals.length > 0) {
+      txtLines.push('【轉介 / 會診】');
+      referrals.forEach(function(r) { txtLines.push('☐ ' + r); });
+      txtLines.push('');
+    }
+    if (others.length > 0) {
+      txtLines.push('【其他事項】');
+      others.forEach(function(o) { txtLines.push('☐ ' + o); });
+      txtLines.push('');
+    }
+  } else {
+    txtLines.push('（無行動項）');
+  }
+  txtLines.push('');
+
+  // 時間標記 - 純文字版本
+  if (timeframes.length > 0) {
+    txtLines.push('========== 時間標記 / 期限 ==========');
+    timeframes.forEach(function(tf) {
+      var icon = /立即|馬上|儘快|今天/.test(tf) ? '🔴 [緊急]' : /明天|後天|一?.?週/.test(tf) ? '🟡 [本週]' : '🟢 [寬裕]';
+      txtLines.push(icon + ' ' + tf);
+    });
+    txtLines.push('');
+  }
+
+  txtLines.push('由 AI 會議記錄系統自動生成 · ' + new Date().toLocaleString('zh-TW'));
+
+  return {
+    md: mdLines.join('\n'),
+    txt: txtLines.join('\n')
+  };
+}
+
+function generateAndShowSummary() {
+  var tx = document.getElementById('transcript').value;
+  if (!tx.trim()) {
+    toast('會議記錄為空，請先錄音或轉錄');
+    return;
+  }
+
+  var summary = generateSummary(tx);
+  document.getElementById('summaryMD').value = summary.md;
+  document.getElementById('summaryTxt').value = summary.txt;
+  document.getElementById('summaryPanel').style.display = 'block';
+  document.getElementById('summaryMeta').textContent = '共 ' + summary.md.split('\n').length + ' 行';
+  toast('✨ 摘要已生成');
+}
+
+function copySummaryMD() {
+  var v = document.getElementById('summaryMD').value;
+  if (!v.trim()) { toast('摘要為空'); return; }
+  navigator.clipboard.writeText(v).then(function() { toast('已複製 Markdown 版本'); });
+}
+
+function copySummaryTxt() {
+  var v = document.getElementById('summaryTxt').value;
+  if (!v.trim()) { toast('摘要為空'); return; }
+  navigator.clipboard.writeText(v).then(function() { toast('已複製純文字版本'); });
+}
+
+function saveSummaryMD() {
+  var v = document.getElementById('summaryMD').value;
+  if (!v.trim()) { toast('摘要為空'); return; }
+  var title = document.getElementById('mtgTitle').value || '會議摘要';
+  var date = new Date().toISOString().slice(0,10);
+  dl(v, title + '_摘要_' + date + '.md', 'text/markdown;charset=utf-8');
+  toast('已儲存 Markdown');
+}
+
+function saveSummaryTxt() {
+  var v = document.getElementById('summaryTxt').value;
+  if (!v.trim()) { toast('摘要為空'); return; }
+  var title = document.getElementById('mtgTitle').value || '會議摘要';
+  var date = new Date().toISOString().slice(0,10);
+  dl(v, title + '_摘要_' + date + '.txt', 'text/plain;charset=utf-8');
+  toast('已儲存純文字');
+}
+
+// 下載輔助函數
+function dl(content, filename, mimeType) {
+  var blob = new Blob([content], { type: mimeType });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 
