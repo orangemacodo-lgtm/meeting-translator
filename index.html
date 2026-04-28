@@ -1630,7 +1630,7 @@ function doTranscribe() {
   if (!selectedFile) return;
   var btn = document.getElementById('btnTranscribe');
   btn.disabled = true;
-  btn.textContent = '轉錄中...';
+  btn.textContent = '分析中...';
 
   var pw = document.getElementById('progWrap');
   var pf = document.getElementById('progFill');
@@ -1638,30 +1638,101 @@ function doTranscribe() {
   pw.classList.add('show');
   pf.style.width = '0%';
 
-  var modelId = document.getElementById('whisperModel').value;
   var lang = document.getElementById('uploadLang').value;
-  var gain = parseFloat(document.getElementById('uploadGain').value);
 
-  // 🔧 M4A/AAC 檔案自動改用 Small 模型（最穩定）
-  var fileName = selectedFile.name.toLowerCase();
+  // 🧠 智能音頻分析 + 模型選擇
+  analyzeAudioProfile(selectedFile, pw, pf, pt, btn, lang);
+}
+
+// 🧠 智能音頻分析函數
+function analyzeAudioProfile(file, pw, pf, pt, btn, lang) {
+  var fileName = file.name.toLowerCase();
+  var fileSize = file.size;
+
+  pt.textContent = '🔬 分析音頻特性中...';
+  pf.style.width = '5%';
+
+  // 初始配置
+  var profile = {
+    fileName: fileName,
+    fileSize: fileSize,
+    duration: 0,
+    recommendedModel: 'Xenova/whisper-small',
+    recommendedGain: 1.5,
+    enableAudioEnhance: true,
+    reason: []
+  };
+
+  // 1. 根據格式判斷
   if (fileName.endsWith('.m4a') || fileName.endsWith('.aac')) {
-    modelId = 'Xenova/whisper-small'; // 強制改用 Small
-    pt.textContent = '🔧 M4A 檔案 → 自動改用 Small 模型（最穩定）';
-    console.log('[自動降級] M4A 檔案 → Small 模型');
-    toast('🔧 M4A 自動改用 Small 模型保證穩定', 2000);
-    setTimeout(function() { continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain); }, 600);
-    return;
+    profile.recommendedModel = 'Xenova/whisper-small';
+    profile.recommendedGain = 2.0;
+    profile.enableAudioEnhance = true;
+    profile.reason.push('M4A格式→Small模型+增益2.0x');
+  } else if (fileName.endsWith('.mp3')) {
+    profile.recommendedModel = 'Xenova/whisper-base';
+    profile.recommendedGain = 1.2;
+    profile.reason.push('MP3格式→Base模型');
+  } else if (fileName.endsWith('.wav') || fileName.endsWith('.flac')) {
+    profile.recommendedModel = 'Xenova/whisper-small';
+    profile.recommendedGain = 1.0;
+    profile.reason.push('高品質格式→Small模型');
   }
+
+  // 2. 根據檔案大小調整
+  var sizeInMB = fileSize / (1024 * 1024);
+  if (sizeInMB < 1) {
+    profile.recommendedGain = Math.max(2.5, profile.recommendedGain);
+    profile.reason.push('小檔案(可能小聲)→增益提升');
+  } else if (sizeInMB > 10) {
+    profile.recommendedModel = 'Xenova/whisper-base'; // 大檔案用更小模型以加快速度
+    profile.reason.push('大檔案→切換Base加快速度');
+  }
+
+  // 3. 讀取元數據
+  pt.textContent = '⏳ 掃描音頻時長...';
+  pf.style.width = '10%';
+
+  var audio = new Audio();
+  audio.onloadedmetadata = function() {
+    profile.duration = audio.duration;
+    console.log('[音頻分析完成]', profile);
+    pt.textContent = '✅ ' + profile.reason.join(' + ');
+    pf.style.width = '15%';
+
+    setTimeout(function() {
+      startTranscribeWithProfile(file, pw, pf, pt, btn, lang, profile);
+    }, 800);
+  };
+  audio.onerror = function() {
+    console.log('[無法讀取元數據，繼續用預設配置]', profile);
+    pt.textContent = '⚠️ 無法讀取元數據，用預設配置：' + profile.reason.join(' + ');
+    pf.style.width = '15%';
+
+    setTimeout(function() {
+      startTranscribeWithProfile(file, pw, pf, pt, btn, lang, profile);
+    }, 800);
+  };
+
+  audio.src = URL.createObjectURL(file);
+}
+
+// 根據分析結果開始轉錄
+function startTranscribeWithProfile(file, pw, pf, pt, btn, lang, profile) {
+  var modelId = profile.recommendedModel;
+  var gain = profile.recommendedGain;
+
+  pt.textContent = '🚀 啟動轉錄：' + modelId.split('/')[1] + ' (增益 ' + gain.toFixed(1) + 'x，音頻增強 ON)';
+  pf.style.width = '20%';
 
   // 🔄 如果即時模式還有轉錄在進行，等待完成
   if (isTranscribing || transcribeQueue.length > 0) {
-    pt.textContent = '⏳ 等待即時轉錄完成（' + (transcribeQueue.length + (isTranscribing ? 1 : 0)) + ' 個任務）...';
+    pt.textContent = '⏳ 等待即時轉錄完成...';
     pf.style.width = '5%';
-    console.log('[上傳] 等待轉錄隊列完成...');
     var waitInterval = setInterval(function() {
       if (!isTranscribing && transcribeQueue.length === 0) {
         clearInterval(waitInterval);
-        continueTranscribe(pw, pf, pt, btn, modelId, lang, gain);
+        continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain);
       } else {
         pf.style.width = (5 + Math.random() * 10) + '%';
       }
