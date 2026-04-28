@@ -1739,11 +1739,15 @@ function continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain) {
 
           console.log('[解碼驗證] 音訊長度:', audioData.length, '樣本 (~' + (audioData.length / 16000).toFixed(1) + '秒)');
 
-          // 計算音訊的 RMS（檢測音量）
-          var sum = 0;
-          for (var i = 0; i < audioData.length; i++) sum += audioData[i] * audioData[i];
+          // 計算音訊的 RMS 和 Peak（檢測音量）
+          var sum = 0, peak = 0;
+          for (var i = 0; i < audioData.length; i++) {
+            var abs = Math.abs(audioData[i]);
+            sum += audioData[i] * audioData[i];
+            if (abs > peak) peak = abs;
+          }
           var rms = Math.sqrt(sum / audioData.length);
-          console.log('[音訊品質] RMS:', rms.toFixed(4), 'Peak:', Math.max(...audioData).toFixed(4));
+          console.log('[音訊品質] RMS:', rms.toFixed(4), 'Peak:', peak.toFixed(4));
 
           if (rms < 0.001) {
             console.warn('[警告] 音訊 RMS 極低，可能導致識別失敗');
