@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>AI 會議記錄系統</title>
-<script src="https://cdn.jsdelivr.net/npm/franc@6.2.0/dist/franc.min.js"></script>
+<link rel="icon" href="data:,">
 <style>
 :root {
   --bg: #0d1117;
@@ -508,7 +508,7 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
 
   <div class="opt-row" style="margin-bottom:10px">
     <label class="opt-item">
-      <input type="checkbox" id="chkAutoTranslate" />
+      <input type="checkbox" id="chkAutoTranslateUpload" />
       <span class="opt-label">🌐 自動翻譯</span>
     </label>
   </div>
@@ -518,7 +518,7 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
   </button>
 
   <div style="text-align:center;font-size:0.75rem;color:var(--text3);margin-top:7px">
-    首次使用需下載模型 · 下載後可離線使用 · 音訊完全在本機處理，不上傳
+    首次使用需下載模型/套件 · 依瀏覽器快取重用 · 自動翻譯會送出文字
     <br/>
     <span style="color:var(--yellow);">💡 若出現 OrtRun 錯誤，請改用 Small 模型（更穩定）</span>
   </div>
@@ -577,7 +577,7 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
   </div>
 </div>
 
-<div class="footer">即時錄音使用瀏覽器語音識別 · 檔案轉錄使用 OpenAI Whisper（本機運算，不上傳）</div>
+<div class="footer">即時錄音使用瀏覽器語音識別 · 檔案轉錄使用 Whisper 模型（瀏覽器端運算；翻譯另需外部服務）</div>
 </div>
 
 <div id="toast"></div>
@@ -623,15 +623,7 @@ window.addEventListener('DOMContentLoaded', function() {
   if (recMode !== 'live') setRecMode('whisper');
   // 背景預載 Whisper 模型（延遲 3 秒避免阻塞頁面渲染）
   setTimeout(function() { preloadWhisperModel(); }, 3000);
-  // 檢查 LibreTranslate API 連線
-  console.log('[初始化] 檢查翻譯服務...');
-  fetch(translateApiUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ q: '測試', source: 'zh', target: 'en' }),
-    signal: AbortSignal.timeout(5000) // 5秒超時
-  }).then(function(r) { console.log('[翻譯服務] ✅ 可用'); })
-    .catch(function(e) { console.warn('[翻譯服務] ⚠️ 不可用:', e.message); });
+  console.log('[初始化] 自動翻譯未啟用，暫不連線外部翻譯服務');
 });
 
 function setDate() {
@@ -765,6 +757,8 @@ function toggleRec() {
 
 function loadWhisperPipeline(modelId, pf, pt) {
   if (whisperCache[modelId]) return Promise.resolve(whisperCache[modelId]);
+  var progressFn = typeof pf === 'function' ? pf : null;
+  var doneFn = typeof pt === 'function' ? pt : null;
   return import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2').then(function(mod) {
     var env = mod.env;
     env.allowLocalModels = false;
@@ -772,17 +766,22 @@ function loadWhisperPipeline(modelId, pf, pt) {
     return mod.pipeline('automatic-speech-recognition', modelId, {
       quantized: true,
       progress_callback: function(p) {
+        if (progressFn) {
+          progressFn(p);
+          return;
+        }
         if (p.status === 'downloading' || p.status === 'progress') {
-          if (pf) pf.style.width = (5 + (p.progress||0) * 0.75) + '%';
+          if (pf && pf.style) pf.style.width = (5 + (p.progress||0) * 0.75) + '%';
           if (pt) pt.textContent = '下載模型：' + Math.round(p.progress||0) + '%';
         } else if (p.status === 'loading') {
-          if (pf) pf.style.width = '82%';
+          if (pf && pf.style) pf.style.width = '82%';
           if (pt) pt.textContent = '載入模型至記憶體...';
         }
       }
     });
   }).then(function(pipe) {
     whisperCache[modelId] = pipe;
+    if (doneFn) doneFn(pipe);
     return pipe;
   });
 }
@@ -827,29 +826,18 @@ function enhanceAudio(audioData) {
 // 🌐 語言檢測函數
 function detectLanguage(text) {
   if (!text || text.trim().length < 4) return 'mixed';
-  try {
-    if (typeof franc !== 'undefined') {
-      var result = franc(text, { only: ['cmn', 'eng', 'jpn', 'kor'] }); // 主要語言
-      // franc 返回格式: 'cmn' (中文), 'eng' (英文), 等
-      if (result === 'cmn' || result.startsWith('zh')) return 'zh';
-      if (result === 'eng') return 'en';
-      if (result === 'jpn') return 'ja';
-      if (result === 'kor') return 'ko';
-
-      // 混合檢測：計算中英文字符比例
-      var zhCount = (text.match(/[一-鿿]/g) || []).length;
-      var enCount = (text.match(/[a-zA-Z]+/g) || []).length;
-      var total = zhCount + enCount;
-      if (total === 0) return 'mixed';
-      var zhRatio = zhCount / total;
-
-      if (zhRatio > 0.7) return 'zh';
-      if (zhRatio < 0.3) return 'en';
-      return 'mixed';
-    }
-  } catch(e) {
-    console.warn('[語言檢測] franc 錯誤:', e);
-  }
+  // 本地輕量判斷，避免翻譯功能依賴額外 CDN。
+  var zhCount = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+  var jaCount = (text.match(/[\u3040-\u30ff]/g) || []).length;
+  var koCount = (text.match(/[\uac00-\ud7af]/g) || []).length;
+  var enCount = (text.match(/[a-zA-Z]+/g) || []).join('').length;
+  var total = zhCount + jaCount + koCount + enCount;
+  if (total === 0) return 'mixed';
+  if (jaCount / total > 0.35) return 'ja';
+  if (koCount / total > 0.35) return 'ko';
+  var zhRatio = zhCount / total;
+  if (zhRatio > 0.45) return 'zh';
+  if (enCount / total > 0.6) return 'en';
   return 'mixed';
 }
 
@@ -998,7 +986,7 @@ function actuallyTranscribeBlob(blob, pipe, segLabel, isFinal, retryCount) {
     var displayText = ts + out + '\n';
 
     // 🌐 如果啟用自動翻譯，加翻譯版本
-    if (document.getElementById('chkAutoTranslate').checked) {
+    if (isAutoTranslateEnabled('live')) {
       var detectedLang = detectLanguage(out);
       lastDetectedLang = detectedLang;
       console.log('[檢測] 語言:', detectedLang, '文本:', out.substring(0, 30));
@@ -1483,16 +1471,29 @@ function setupTranscript() {
 }
 
 function setupTranslationToggle() {
-  var chk = document.getElementById('chkAutoTranslate');
   var banner = document.getElementById('translateBanner');
-  if (!chk || !banner) return;
-  chk.addEventListener('change', function() {
-    banner.style.display = chk.checked ? 'block' : 'none';
-    if (chk.checked) {
-      console.log('[翻譯] 自動翻譯已啟用');
-      toast('🌐 自動翻譯已啟用', 2000);
-    }
-  });
+  if (!banner) return;
+
+  function bind(chk) {
+    if (!chk) return;
+    chk.addEventListener('change', function() {
+      banner.style.display = isAutoTranslateEnabled('live') || isAutoTranslateEnabled('upload') ? 'block' : 'none';
+      if (chk.checked) {
+        console.log('[翻譯] 自動翻譯已啟用');
+        toast('🌐 自動翻譯已啟用', 2000);
+      }
+    });
+  }
+
+  bind(document.getElementById('chkAutoTranslate'));
+  bind(document.getElementById('chkAutoTranslateUpload'));
+}
+
+function isAutoTranslateEnabled(scope) {
+  var id = scope === 'upload' ? 'chkAutoTranslateUpload' : 'chkAutoTranslate';
+  var chk = document.getElementById(id);
+  if (!chk && scope === 'upload') chk = document.getElementById('chkAutoTranslate');
+  return !!(chk && chk.checked);
 }
 
 function syncTx() {
@@ -1525,6 +1526,8 @@ function onFileSelect(e) {
 
 function loadFile(f) {
   selectedFile = f;
+  currentAttempt = 0;
+  debugResults = [];
   document.getElementById('fiName').textContent = f.name;
   document.getElementById('fiSize').textContent = fmtBytes(f.size);
   document.getElementById('fileInfo').classList.add('show');
@@ -1640,6 +1643,11 @@ function decodeAudioViaElement(file, gain, onProgress) {
 
 function doTranscribe() {
   if (!selectedFile) return;
+  var debugModeStart = document.getElementById('chkDebugMode') ? document.getElementById('chkDebugMode').checked : false;
+  if (!debugModeStart || currentAttempt === 0) {
+    currentAttempt = 0;
+    debugResults = [];
+  }
   var btn = document.getElementById('btnTranscribe');
   btn.disabled = true;
   btn.textContent = '分析中...';
@@ -1667,6 +1675,21 @@ var debugAttempts = [
 ];
 var currentAttempt = 0;
 var debugResults = [];
+
+function buildDebugSummary() {
+  if (!debugResults.length) return '';
+  var best = debugResults.slice().sort(function(a, b) {
+    if (a.success !== b.success) return a.success ? -1 : 1;
+    return b.charCount - a.charCount;
+  })[0];
+  var debugSummary = '\n\n【🧪 調試摘要】\n';
+  debugSummary += '模型/參數組合測試結果：\n';
+  debugResults.forEach(function(r) {
+    debugSummary += '  #' + r.attempt + ' ' + r.config + ' → ' + r.charCount + '字 ' + r.quality + (r.success ? ' ✅' : '') + '\n';
+  });
+  debugSummary += '\n最佳配置：' + (best ? best.config : '無') + '\n';
+  return debugSummary;
+}
 
 // 🧠 智能音頻分析函數
 function analyzeAudioProfile(file, pw, pf, pt, btn, lang) {
@@ -1720,6 +1743,12 @@ function analyzeAudioProfile(file, pw, pf, pt, btn, lang) {
   var audio = new Audio();
   audio.onloadedmetadata = function() {
     profile.duration = audio.duration;
+    if (profile.duration > 1800) {
+      profile.recommendedModel = 'Xenova/whisper-base';
+      profile.reason.push('長音檔→分段轉錄+Base模型');
+    } else if (profile.duration > 600) {
+      profile.reason.push('長音檔→分段轉錄');
+    }
     console.log('[音頻分析完成]', profile);
     pt.textContent = '✅ ' + profile.reason.join(' + ');
     pf.style.width = '15%';
@@ -1765,6 +1794,82 @@ function startTranscribeWithProfile(file, pw, pf, pt, btn, lang, profile) {
   }
 
   continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain);
+}
+
+var UPLOAD_SAMPLE_RATE = 16000;
+var UPLOAD_CHUNK_SECONDS = 120;
+
+function resultToTimestampedChunks(result, offsetSeconds) {
+  var chunks = [];
+  if (result.chunks && result.chunks.length) {
+    result.chunks.forEach(function(c) {
+      var start = c.timestamp && c.timestamp[0] != null ? c.timestamp[0] : null;
+      chunks.push({
+        ts: start != null ? '[' + fmt(Math.floor(offsetSeconds + start)) + '] ' : '',
+        text: (c.text || '').trim()
+      });
+    });
+  } else {
+    chunks.push({
+      ts: offsetSeconds > 0 ? '[' + fmt(Math.floor(offsetSeconds)) + '] ' : '',
+      text: (result.text || '').trim()
+    });
+  }
+  return chunks;
+}
+
+function transcribeUploadAudio(transcriber, audioData, opts, pt, pf, modelName) {
+  var duration = audioData.length / UPLOAD_SAMPLE_RATE;
+  var totalChunks = Math.max(1, Math.ceil(duration / UPLOAD_CHUNK_SECONDS));
+
+  if (totalChunks === 1) {
+    pt.textContent = '轉錄中：' + modelName;
+    return transcriber(audioData, opts).then(function(result) {
+      return resultToTimestampedChunks(result, 0);
+    });
+  }
+
+  var allChunks = [];
+  pt.textContent = '長音檔分段轉錄：共 ' + totalChunks + ' 段';
+
+  function runChunk(index) {
+    if (index >= totalChunks) return Promise.resolve(allChunks);
+
+    var startSec = index * UPLOAD_CHUNK_SECONDS;
+    var endSec = Math.min(duration, startSec + UPLOAD_CHUNK_SECONDS);
+    var startSample = Math.floor(startSec * UPLOAD_SAMPLE_RATE);
+    var endSample = Math.min(audioData.length, Math.ceil(endSec * UPLOAD_SAMPLE_RATE));
+    var chunkAudio = audioData.slice(startSample, endSample);
+    var chunkOpts = Object.assign({}, opts);
+
+    pf.style.width = (90 + (index / totalChunks) * 8).toFixed(1) + '%';
+    pt.textContent = '轉錄第 ' + (index + 1) + '/' + totalChunks + ' 段（' + fmt(Math.floor(startSec)) + '-' + fmt(Math.floor(endSec)) + '）...';
+    console.log('[分段轉錄] 第 ' + (index + 1) + '/' + totalChunks + ' 段', {
+      start: startSec,
+      end: endSec,
+      samples: chunkAudio.length,
+      model: modelName
+    });
+
+    return transcriber(chunkAudio, chunkOpts).then(function(result) {
+      allChunks = allChunks.concat(resultToTimestampedChunks(result, startSec));
+    }).catch(function(err) {
+      console.error('[分段轉錄] 第 ' + (index + 1) + ' 段失敗:', err);
+      allChunks.push({
+        ts: '[' + fmt(Math.floor(startSec)) + '] ',
+        text: '（此段轉錄失敗：' + (err.message || err) + '）',
+        failed: true
+      });
+    }).then(function() {
+      return new Promise(function(resolve) {
+        setTimeout(resolve, 50);
+      });
+    }).then(function() {
+      return runChunk(index + 1);
+    });
+  }
+
+  return runChunk(0);
 }
 
 function continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain) {
@@ -1856,9 +1961,6 @@ function continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain) {
                 actualGain = debugAttempts[currentAttempt].gain;
               }
 
-              if (actualGain > 1) {
-                ad = Float32Array.from(ad, function(v) { return Math.max(-1, Math.min(1, v * actualGain)); });
-              }
               if (debugMode) console.log('[音頻處理] 增益已應用:', actualGain + 'x');
               return ad;
             });
@@ -1944,22 +2046,14 @@ function continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain) {
             console.log('[Whisper 配置]', opts);
             pt.textContent = '🧪 調試轉錄（激進參數）：' + modelId.split('/')[1];
           }
-          return transcriber(audioData, opts);
-      }).then(function(result) {
+          return transcribeUploadAudio(transcriber, audioData, opts, pt, pf, modelId.split('/')[1]);
+      }).then(function(rawChunks) {
         pf.style.width = '100%';
         pt.textContent = '轉錄完成！';
 
-        var rawChunks = [];
-        if (result.chunks && result.chunks.length) {
-          result.chunks.forEach(function(c) {
-            rawChunks.push({ ts: c.timestamp && c.timestamp[0] != null ? '[' + fmt(Math.floor(c.timestamp[0])) + '] ' : '', text: c.text.trim() });
-          });
-        } else {
-          rawChunks.push({ ts: '', text: (result.text || '').trim() });
-        }
-
         // 幻覺過濾（單字 + 短語重複）
         var filtered = rawChunks.filter(function(c) {
+          if (c.failed) return true;
           if (!c.text) return false;
           var cl = c.text.replace(/\s/g, '');
           if (cl.length < 4) return true;
@@ -2011,7 +2105,7 @@ function continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain) {
         }
 
         var out = '\n── 檔案轉錄：' + selectedFile.name + ' ──\n';
-        var autoTranslate = document.getElementById('chkAutoTranslate').checked;
+        var autoTranslate = isAutoTranslateEnabled('upload');
         var translationPromises = [];
 
         filtered.forEach(function(c) {
@@ -2043,19 +2137,14 @@ function continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain) {
             // 🧪 調試模式：追加調試摘要
             var debugMode = document.getElementById('chkDebugMode') ? document.getElementById('chkDebugMode').checked : false;
             if (debugMode && debugResults.length > 0) {
-              var debugSummary = '\n\n【🧪 調試摘要】\n';
-              debugSummary += '模型/參數組合測試結果：\n';
-              debugResults.forEach(function(r) {
-                debugSummary += '  #' + r.attempt + ' ' + r.config + ' → ' + r.charCount + '字 ' + r.quality + (r.success ? ' ✅' : '') + '\n';
-              });
-              debugSummary += '\n最佳配置：' + (debugResults[0] || {}).config + '\n';
-              ta.value += debugSummary;
+              ta.value += buildDebugSummary();
             }
 
             finalTx = ta.value;
             ta.scrollTop = ta.scrollHeight;
             updateWC();
             toast('轉錄' + (debugMode ? '（調試模式）' : '') + '完成！');
+            currentAttempt = 0;
             setTimeout(function() { pw.classList.remove('show'); }, 3000);
           });
           return;
@@ -2064,9 +2153,14 @@ function continueTranscribeWithModel(pw, pf, pt, btn, modelId, lang, gain) {
         // 無翻譯或翻譯流程會自己顯示結果
         var ta = document.getElementById('transcript');
         ta.value = (ta.value ? ta.value + '\n' : '') + out;
+        var debugMode = document.getElementById('chkDebugMode') ? document.getElementById('chkDebugMode').checked : false;
+        if (debugMode && debugResults.length > 0) {
+          ta.value += buildDebugSummary();
+        }
         finalTx = ta.value;
         ta.scrollTop = ta.scrollHeight;
         updateWC();
+        currentAttempt = 0;
         if (!autoTranslate) {
           toast('轉錄完成！');
           setTimeout(function() { pw.classList.remove('show'); }, 3000);
