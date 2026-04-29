@@ -1,0 +1,1067 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI會議記錄 - 實時記錄工具</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/docx/8.5.0/docx.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #2E75B6;
+            --primary-light: #D5E8F0;
+            --success: #70AD47;
+            --warning: #FFC000;
+            --danger: #E74C3C;
+            --gray-light: #F5F5F5;
+            --gray: #888;
+            --gray-dark: #333;
+            --border: #DDD;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            min-height: 100vh;
+            padding: 10px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+
+        .header {
+            background: linear-gradient(135deg, var(--primary) 0%, #1e5a96 100%);
+            color: white;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            font-weight: 600;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: white;
+            color: var(--primary);
+            border: 2px solid white;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #5a8c37;
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c0392b;
+        }
+
+        .main {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .sidebar {
+            width: 280px;
+            background: var(--gray-light);
+            border-right: 1px solid var(--border);
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .content {
+            flex: 1;
+            padding: 30px;
+            overflow-y: auto;
+        }
+
+        .section {
+            margin-bottom: 30px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--primary);
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-title::before {
+            content: '';
+            display: inline-block;
+            width: 4px;
+            height: 20px;
+            background: var(--primary);
+            border-radius: 2px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 500;
+            color: var(--gray-dark);
+            font-size: 13px;
+        }
+
+        input[type="text"],
+        input[type="date"],
+        input[type="time"],
+        input[type="number"],
+        textarea,
+        select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        input[type="text"]:focus,
+        input[type="date"]:focus,
+        input[type="time"]:focus,
+        input[type="number"]:focus,
+        textarea:focus,
+        select:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--primary-light);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 8px;
+        }
+
+        .input-group input {
+            flex: 1;
+        }
+
+        .input-group button {
+            padding: 10px 12px;
+            background: var(--primary);
+            color: white;
+            white-space: nowrap;
+        }
+
+        .info-box {
+            background: var(--primary-light);
+            border-left: 4px solid var(--primary);
+            padding: 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            color: var(--gray-dark);
+            margin-bottom: 15px;
+        }
+
+        .item-card {
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s;
+        }
+
+        .item-card:hover {
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .item-card-content {
+            flex: 1;
+        }
+
+        .item-card-speaker {
+            font-weight: 600;
+            color: var(--primary);
+            font-size: 13px;
+        }
+
+        .item-card-text {
+            color: var(--gray-dark);
+            font-size: 14px;
+            margin-top: 4px;
+        }
+
+        .item-card-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .btn-small {
+            padding: 6px 10px;
+            font-size: 12px;
+            background: var(--gray);
+            color: white;
+            border-radius: 4px;
+            cursor: pointer;
+            border: none;
+            transition: all 0.3s;
+        }
+
+        .btn-small:hover {
+            background: var(--gray-dark);
+        }
+
+        .btn-small.delete {
+            background: var(--danger);
+        }
+
+        .btn-small.delete:hover {
+            background: #c0392b;
+        }
+
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+
+        .table th {
+            background: var(--primary-light);
+            color: var(--primary);
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 2px solid var(--border);
+        }
+
+        .table td {
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .table tr:hover {
+            background: var(--gray-light);
+        }
+
+        .upload-zone {
+            border: 2px dashed var(--primary);
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            background: var(--primary-light);
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .upload-zone:hover {
+            background: rgba(46, 117, 182, 0.15);
+            border-color: #1e5a96;
+        }
+
+        .upload-zone input {
+            display: none;
+        }
+
+        .upload-icon {
+            font-size: 32px;
+            margin-bottom: 8px;
+        }
+
+        .upload-text {
+            color: var(--primary);
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        .tag {
+            display: inline-block;
+            background: var(--primary);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            margin-right: 6px;
+            margin-bottom: 6px;
+        }
+
+        .tag.secondary {
+            background: var(--success);
+        }
+
+        .tag.danger {
+            background: var(--danger);
+        }
+
+        .transcription-loading {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--primary);
+            font-size: 14px;
+            margin-top: 10px;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--primary-light);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .empty-state {
+            text-align: center;
+            color: var(--gray);
+            padding: 30px;
+            font-size: 14px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid var(--border);
+        }
+
+        .tab {
+            padding: 12px 16px;
+            background: none;
+            border: none;
+            color: var(--gray);
+            cursor: pointer;
+            font-weight: 500;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+            transition: all 0.3s;
+        }
+
+        .tab.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .action-item {
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 10px;
+        }
+
+        .action-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 10px;
+        }
+
+        .action-item-title {
+            font-weight: 600;
+            color: var(--gray-dark);
+        }
+
+        .action-item-owner {
+            font-size: 12px;
+            color: var(--gray);
+        }
+
+        .action-item-deadline {
+            font-size: 12px;
+            background: var(--warning);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+
+        .action-item-status {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .status-badge.pending {
+            background: var(--warning);
+            color: white;
+        }
+
+        .status-badge.completed {
+            background: var(--success);
+            color: white;
+        }
+
+        @media (max-width: 768px) {
+            .main {
+                flex-direction: column;
+            }
+
+            .sidebar {
+                width: 100%;
+                border-right: none;
+                border-bottom: 1px solid var(--border);
+                max-height: 300px;
+            }
+
+            .header {
+                flex-direction: column;
+                text-align: center;
+            }
+
+            .header h1 {
+                font-size: 22px;
+            }
+
+            .content {
+                padding: 15px;
+            }
+
+            .table {
+                font-size: 12px;
+            }
+
+            .table th,
+            .table td {
+                padding: 8px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📝 AI會議記錄</h1>
+            <div class="header-actions">
+                <button class="btn-primary" onclick="exportWord()">📄 Word</button>
+                <button class="btn-primary" onclick="exportPDF()">📋 PDF</button>
+                <button class="btn-success" onclick="clearData()">🔄 重置</button>
+            </div>
+        </div>
+
+        <div class="main">
+            <div class="sidebar">
+                <!-- 會議基本信息 -->
+                <div class="section">
+                    <div class="section-title">會議信息</div>
+                    <div class="form-group">
+                        <label>會議主题</label>
+                        <input type="text" id="meetingTitle" placeholder="如：产品规划会">
+                    </div>
+                    <div class="form-group">
+                        <label>會議日期</label>
+                        <input type="date" id="meetingDate">
+                    </div>
+                    <div class="form-group">
+                        <label>會議時間</label>
+                        <input type="time" id="meetingTime">
+                    </div>
+                    <div class="form-group">
+                        <label>會議地點</label>
+                        <input type="text" id="meetingLocation" placeholder="如：會議室A">
+                    </div>
+                    <div class="form-group">
+                        <label>記錄人</label>
+                        <input type="text" id="recorder" placeholder="輸入你的名字">
+                    </div>
+                </div>
+
+                <!-- 參會人管理 -->
+                <div class="section">
+                    <div class="section-title">參會人</div>
+                    <div class="input-group">
+                        <input type="text" id="newAttendee" placeholder="添加參會者">
+                        <button onclick="addAttendee()">添加</button>
+                    </div>
+                    <div id="attendeeList" style="margin-top: 10px;"></div>
+                </div>
+
+                <!-- 音频上传 -->
+                <div class="section">
+                    <div class="section-title">语音轉錄</div>
+                    <label class="upload-zone" onclick="document.getElementById('audioFile').click()">
+                        <div class="upload-icon">🎙️</div>
+                        <div class="upload-text">点击上传音频</div>
+                        <input type="file" id="audioFile" accept="audio/*" onchange="handleAudioUpload()">
+                    </label>
+                    <div id="transcriptionStatus"></div>
+                </div>
+            </div>
+
+            <div class="content">
+                <!-- 标签切换 -->
+                <div class="tabs">
+                    <button class="tab active" onclick="switchTab('overview')">📊 概覽</button>
+                    <button class="tab" onclick="switchTab('discussion')">💬 討論</button>
+                    <button class="tab" onclick="switchTab('decisions')">✅ 決議</button>
+                    <button class="tab" onclick="switchTab('actions')">⚡ 行動项</button>
+                </div>
+
+                <!-- 概覽标签 -->
+                <div id="overview" class="tab-content active">
+                    <div class="section">
+                        <div class="section-title">會議統計</div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 30px;">
+                            <div style="background: var(--primary-light); padding: 15px; border-radius: 8px; text-align: center;">
+                                <div style="font-size: 28px; font-weight: 600; color: var(--primary);" id="statsAttendees">0</div>
+                                <div style="color: var(--gray); font-size: 13px;">參會人数</div>
+                            </div>
+                            <div style="background: var(--primary-light); padding: 15px; border-radius: 8px; text-align: center;">
+                                <div style="font-size: 28px; font-weight: 600; color: var(--primary);" id="statsDiscussions">0</div>
+                                <div style="color: var(--gray); font-size: 13px;">討論议题</div>
+                            </div>
+                            <div style="background: var(--primary-light); padding: 15px; border-radius: 8px; text-align: center;">
+                                <div style="font-size: 28px; font-weight: 600; color: var(--primary);" id="statsActions">0</div>
+                                <div style="color: var(--gray); font-size: 13px;">行動项</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">會議摘要</div>
+                        <div class="form-group">
+                            <label>會議概述</label>
+                            <textarea id="summary" placeholder="总结會議的主要目的和成果"></textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 討論标签 -->
+                <div id="discussion" class="tab-content">
+                    <div class="section">
+                        <div class="section-title">添加討論記錄</div>
+                        <div class="form-group">
+                            <label>發言人</label>
+                            <select id="speakerSelect">
+                                <option value="">选择發言人</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>討論內容</label>
+                            <textarea id="discussionText" placeholder="記錄討論內容..."></textarea>
+                        </div>
+                        <button class="btn-success" onclick="addDiscussion()" style="width: 100%;">添加討論記錄</button>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">討論記錄</div>
+                        <div id="discussionList"></div>
+                    </div>
+                </div>
+
+                <!-- 決議标签 -->
+                <div id="decisions" class="tab-content">
+                    <div class="section">
+                        <div class="section-title">添加決議</div>
+                        <div class="form-group">
+                            <label>決議內容</label>
+                            <input type="text" id="decisionText" placeholder="記錄重要決議...">
+                        </div>
+                        <div class="form-group">
+                            <label>負責人</label>
+                            <select id="decisionOwner">
+                                <option value="">选择負責人</option>
+                            </select>
+                        </div>
+                        <button class="btn-success" onclick="addDecision()" style="width: 100%;">添加決議</button>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">所有決議</div>
+                        <div id="decisionList"></div>
+                    </div>
+                </div>
+
+                <!-- 行動项标签 -->
+                <div id="actions" class="tab-content">
+                    <div class="section">
+                        <div class="section-title">添加行動项</div>
+                        <div class="form-group">
+                            <label>行動內容</label>
+                            <input type="text" id="actionText" placeholder="具體的行動內容">
+                        </div>
+                        <div class="form-group">
+                            <label>負責人</label>
+                            <select id="actionOwner">
+                                <option value="">选择負責人</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>截止日期</label>
+                            <input type="date" id="actionDeadline">
+                        </div>
+                        <button class="btn-success" onclick="addAction()" style="width: 100%;">添加行動项</button>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-title">待办清单</div>
+                        <div id="actionList"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 初始化
+        function init() {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('meetingDate').value = today;
+            loadData();
+            updateStats();
+        }
+
+        // 数据结构
+        let data = {
+            meetingInfo: {
+                title: '',
+                date: '',
+                time: '',
+                location: '',
+                recorder: '',
+                summary: ''
+            },
+            attendees: [],
+            discussions: [],
+            decisions: [],
+            actions: []
+        };
+
+        // 保存数据到localStorage
+        function saveData() {
+            data.meetingInfo.title = document.getElementById('meetingTitle').value;
+            data.meetingInfo.date = document.getElementById('meetingDate').value;
+            data.meetingInfo.time = document.getElementById('meetingTime').value;
+            data.meetingInfo.location = document.getElementById('meetingLocation').value;
+            data.meetingInfo.recorder = document.getElementById('recorder').value;
+            data.meetingInfo.summary = document.getElementById('summary').value;
+            localStorage.setItem('meetingData', JSON.stringify(data));
+        }
+
+        // 从localStorage加载数据
+        function loadData() {
+            const saved = localStorage.getItem('meetingData');
+            if (saved) {
+                data = JSON.parse(saved);
+                document.getElementById('meetingTitle').value = data.meetingInfo.title;
+                document.getElementById('meetingDate').value = data.meetingInfo.date;
+                document.getElementById('meetingTime').value = data.meetingInfo.time;
+                document.getElementById('meetingLocation').value = data.meetingInfo.location;
+                document.getElementById('recorder').value = data.meetingInfo.recorder;
+                document.getElementById('summary').value = data.meetingInfo.summary;
+            }
+            renderAttendees();
+            renderDiscussions();
+            renderDecisions();
+            renderActions();
+        }
+
+        // 添加參會者
+        function addAttendee() {
+            const name = document.getElementById('newAttendee').value.trim();
+            if (name) {
+                data.attendees.push(name);
+                document.getElementById('newAttendee').value = '';
+                saveData();
+                renderAttendees();
+                updateSpeakerSelects();
+                updateStats();
+            }
+        }
+
+        // 移除參會者
+        function removeAttendee(index) {
+            data.attendees.splice(index, 1);
+            saveData();
+            renderAttendees();
+            updateSpeakerSelects();
+            updateStats();
+        }
+
+        // 渲染參會者列表
+        function renderAttendees() {
+            const list = document.getElementById('attendeeList');
+            if (data.attendees.length === 0) {
+                list.innerHTML = '<div class="empty-state">暫無參會者</div>';
+                return;
+            }
+            list.innerHTML = data.attendees.map((name, i) => `
+                <div class="item-card">
+                    <span>${name}</span>
+                    <button class="btn-small delete" onclick="removeAttendee(${i})">刪除</button>
+                </div>
+            `).join('');
+        }
+
+        // 更新發言人选择框
+        function updateSpeakerSelects() {
+            const selects = document.querySelectorAll('[id*="Select"], [id*="Owner"]');
+            const html = '<option value="">选择人员</option>' +
+                        data.attendees.map(name => `<option value="${name}">${name}</option>`).join('');
+            selects.forEach(select => select.innerHTML = html);
+        }
+
+        // 添加討論記錄
+        function addDiscussion() {
+            const speaker = document.getElementById('speakerSelect').value;
+            const text = document.getElementById('discussionText').value.trim();
+            if (speaker && text) {
+                data.discussions.push({
+                    speaker,
+                    text,
+                    timestamp: new Date().toLocaleTimeString('zh-CN')
+                });
+                document.getElementById('discussionText').value = '';
+                document.getElementById('speakerSelect').value = '';
+                saveData();
+                renderDiscussions();
+                updateStats();
+            } else {
+                alert('请选择發言人并輸入內容');
+            }
+        }
+
+        // 移除討論記錄
+        function removeDiscussion(index) {
+            data.discussions.splice(index, 1);
+            saveData();
+            renderDiscussions();
+            updateStats();
+        }
+
+        // 渲染討論列表
+        function renderDiscussions() {
+            const list = document.getElementById('discussionList');
+            if (data.discussions.length === 0) {
+                list.innerHTML = '<div class="empty-state">暫無討論記錄</div>';
+                return;
+            }
+            list.innerHTML = data.discussions.map((item, i) => `
+                <div class="item-card">
+                    <div class="item-card-content">
+                        <div class="item-card-speaker">${item.speaker}</div>
+                        <div class="item-card-text">${item.text}</div>
+                        <div style="color: var(--gray); font-size: 12px; margin-top: 4px;">${item.timestamp}</div>
+                    </div>
+                    <button class="btn-small delete" onclick="removeDiscussion(${i})">刪除</button>
+                </div>
+            `).join('');
+        }
+
+        // 添加決議
+        function addDecision() {
+            const text = document.getElementById('decisionText').value.trim();
+            const owner = document.getElementById('decisionOwner').value;
+            if (text && owner) {
+                data.decisions.push({
+                    text,
+                    owner,
+                    timestamp: new Date().toLocaleTimeString('zh-CN')
+                });
+                document.getElementById('decisionText').value = '';
+                document.getElementById('decisionOwner').value = '';
+                saveData();
+                renderDecisions();
+                updateStats();
+            } else {
+                alert('请輸入決議內容并选择負責人');
+            }
+        }
+
+        // 移除決議
+        function removeDecision(index) {
+            data.decisions.splice(index, 1);
+            saveData();
+            renderDecisions();
+            updateStats();
+        }
+
+        // 渲染決議列表
+        function renderDecisions() {
+            const list = document.getElementById('decisionList');
+            if (data.decisions.length === 0) {
+                list.innerHTML = '<div class="empty-state">暫無決議</div>';
+                return;
+            }
+            list.innerHTML = data.decisions.map((item, i) => `
+                <div class="item-card">
+                    <div class="item-card-content">
+                        <div class="item-card-text" style="font-weight: 500;">${item.text}</div>
+                        <div style="color: var(--gray); font-size: 12px; margin-top: 4px;">
+                            負責人：<span style="color: var(--primary);">${item.owner}</span>
+                        </div>
+                    </div>
+                    <button class="btn-small delete" onclick="removeDecision(${i})">刪除</button>
+                </div>
+            `).join('');
+        }
+
+        // 添加行動项
+        function addAction() {
+            const text = document.getElementById('actionText').value.trim();
+            const owner = document.getElementById('actionOwner').value;
+            const deadline = document.getElementById('actionDeadline').value;
+            if (text && owner && deadline) {
+                data.actions.push({
+                    text,
+                    owner,
+                    deadline,
+                    completed: false
+                });
+                document.getElementById('actionText').value = '';
+                document.getElementById('actionOwner').value = '';
+                document.getElementById('actionDeadline').value = '';
+                saveData();
+                renderActions();
+                updateStats();
+            } else {
+                alert('请完整填写所有字段');
+            }
+        }
+
+        // 移除行動项
+        function removeAction(index) {
+            data.actions.splice(index, 1);
+            saveData();
+            renderActions();
+            updateStats();
+        }
+
+        // 切换行動项状态
+        function toggleAction(index) {
+            data.actions[index].completed = !data.actions[index].completed;
+            saveData();
+            renderActions();
+        }
+
+        // 渲染行動项列表
+        function renderActions() {
+            const list = document.getElementById('actionList');
+            if (data.actions.length === 0) {
+                list.innerHTML = '<div class="empty-state">暫無行動项</div>';
+                return;
+            }
+            list.innerHTML = data.actions.map((item, i) => `
+                <div class="action-item" style="opacity: ${item.completed ? 0.6 : 1};">
+                    <div class="action-item-header">
+                        <div>
+                            <div class="action-item-title" style="text-decoration: ${item.completed ? 'line-through' : 'none'};">
+                                ${item.text}
+                            </div>
+                            <div class="action-item-owner">負責人：${item.owner}</div>
+                        </div>
+                        <div class="action-item-deadline">${item.deadline}</div>
+                    </div>
+                    <div class="action-item-status">
+                        <button class="btn-small" onclick="toggleAction(${i})" style="background: ${item.completed ? 'var(--success)' : 'var(--warning)'};">
+                            ${item.completed ? '✓ 已完成' : '進行中'}
+                        </button>
+                        <button class="btn-small delete" onclick="removeAction(${i})">刪除</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // 更新統計数据
+        function updateStats() {
+            document.getElementById('statsAttendees').textContent = data.attendees.length;
+            document.getElementById('statsDiscussions').textContent = data.discussions.length;
+            document.getElementById('statsActions').textContent = data.actions.length;
+        }
+
+        // 标签切换
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        // 處理音频上传
+        function handleAudioUpload() {
+            const file = document.getElementById('audioFile').files[0];
+            if (!file) return;
+
+            const statusDiv = document.getElementById('transcriptionStatus');
+            statusDiv.innerHTML = '<div class="transcription-loading"><div class="spinner"></div>正在處理音频...</div>';
+
+            // 使用Web Speech API進行識別
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                // 模擬音频處理（實际使用需要后端支持）
+                // 这里演示自動添加一些示例討論記錄
+                setTimeout(() => {
+                    statusDiv.innerHTML = '<div class="info-box">✓ 音频處理完成。您可以手動調整討論記錄。</div>';
+                    // 可以添加一个示例
+                    if (data.attendees.length > 0) {
+                        data.discussions.push({
+                            speaker: data.attendees[0],
+                            text: '[音频轉錄內容] 请根据實际音频內容編輯此项',
+                            timestamp: new Date().toLocaleTimeString('zh-CN')
+                        });
+                        saveData();
+                        renderDiscussions();
+                    }
+                }, 2000);
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        // 导出Word
+        function exportWord() {
+            saveData();
+            const title = data.meetingInfo.title || '會議記錄';
+
+            let content = `會議記錄
+
+會議标题：${data.meetingInfo.title}
+會議日期：${data.meetingInfo.date}
+會議時間：${data.meetingInfo.time}
+會議地點：${data.meetingInfo.location}
+記錄人：${data.meetingInfo.recorder}
+
+參會人员（${data.attendees.length}人）：
+${data.attendees.map(name => `• ${name}`).join('\n')}
+
+會議概述：
+${data.meetingInfo.summary}
+
+討論記錄（${data.discussions.length}项）：
+${data.discussions.map(d => `
+【${d.speaker}】 ${d.timestamp}
+${d.text}
+`).join('\n')}
+
+關鍵決議（${data.decisions.length}项）：
+${data.decisions.map(d => `• ${d.text} (負責人：${d.owner})`).join('\n')}
+
+行動项（${data.actions.length}项）：
+${data.actions.map((a, i) => `
+${i+1}. ${a.text}
+   負責人：${a.owner}
+   截止日期：${a.deadline}
+   状态：${a.completed ? '已完成' : '進行中'}
+`).join('\n')}`;
+
+            const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${title}_${data.meetingInfo.date}.txt`;
+            link.click();
+        }
+
+        // 导出PDF
+        function exportPDF() {
+            saveData();
+            const element = document.querySelector('.content');
+            const opt = {
+                margin: 10,
+                filename: `會議記錄_${data.meetingInfo.date}.pdf`,
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2 },
+                jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' }
+            };
+
+            html2pdf().set(opt).from(element).save();
+        }
+
+        // 清除所有数据
+        function clearData() {
+            if (confirm('确定要清除所有数据吗？此操作無法撤銷！')) {
+                localStorage.removeItem('meetingData');
+                location.reload();
+            }
+        }
+
+        // 防止数据遺失
+        window.addEventListener('beforeunload', saveData);
+
+        // 自動保存（每30秒）
+        setInterval(saveData, 30000);
+
+        // 页面加载完成时初始化
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>

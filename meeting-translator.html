@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>語音翻譯會議紀錄</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel-2: #273449;
+    --border: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --accent-2: #818cf8;
+    --success: #4ade80;
+    --warn: #fbbf24;
+    --danger: #f87171;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei", "PingFang TC", sans-serif;
+    height: 100%;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+  header {
+    padding: 16px 24px;
+    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  h1 {
+    margin: 0;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--muted);
+    transition: background .2s;
+  }
+  .dot.live { background: var(--danger); animation: pulse 1.2s infinite; }
+  .dot.paused { background: var(--warn); }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(248,113,113,.5); }
+    70% { box-shadow: 0 0 0 8px rgba(248,113,113,0); }
+    100% { box-shadow: 0 0 0 0 rgba(248,113,113,0); }
+  }
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .ctrl {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all .15s;
+  }
+  .ctrl:hover:not(:disabled) { background: var(--panel-2); border-color: var(--accent); }
+  .ctrl:disabled { opacity: 0.4; cursor: not-allowed; }
+  .ctrl.primary { background: var(--accent); color: #0f172a; border-color: var(--accent); font-weight: 600; }
+  .ctrl.primary:hover:not(:disabled) { background: #7dd3fc; }
+  .ctrl.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+  .ctrl.warn { background: var(--warn); color: #0f172a; border-color: var(--warn); }
+
+  .config {
+    padding: 14px 24px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: center;
+  }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+  .field label { font-size: 12px; color: var(--muted); }
+  .field select, .field input {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+  .targets {
+    display: flex; flex-wrap: wrap; gap: 8px;
+  }
+  .chip {
+    padding: 4px 10px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .chip.active { background: var(--accent-2); color: #0f172a; border-color: var(--accent-2); font-weight: 600; }
+
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-rows: 1fr auto;
+    overflow: hidden;
+  }
+  #transcript {
+    overflow-y: auto;
+    padding: 20px 24px;
+  }
+  .entry {
+    margin-bottom: 16px;
+    padding: 14px 16px;
+    background: var(--panel);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+  }
+  .entry .time {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  }
+  .entry .original {
+    font-size: 16px;
+    line-height: 1.6;
+    margin-bottom: 8px;
+  }
+  .entry .translations {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    border-top: 1px dashed var(--border);
+    padding-top: 8px;
+    margin-top: 6px;
+  }
+  .entry .tr-line {
+    font-size: 14px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .entry .tr-line .lang {
+    display: inline-block;
+    min-width: 38px;
+    color: var(--accent-2);
+    font-size: 11px;
+    font-weight: 600;
+    margin-right: 6px;
+  }
+  .interim {
+    padding: 14px 16px;
+    margin-bottom: 16px;
+    background: rgba(56,189,248,.08);
+    border-left: 3px solid var(--warn);
+    border-radius: 8px;
+    font-style: italic;
+    color: var(--muted);
+  }
+  .empty {
+    text-align: center;
+    color: var(--muted);
+    padding: 60px 20px;
+  }
+  .empty h2 { color: var(--text); }
+  .empty kbd {
+    background: var(--panel-2);
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    font-size: 12px;
+  }
+  footer {
+    padding: 10px 24px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .notice {
+    background: #422006;
+    color: #fde68a;
+    padding: 10px 24px;
+    font-size: 13px;
+    border-bottom: 1px solid #78350f;
+  }
+  .hide { display: none !important; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>
+    <span id="statusDot" class="dot"></span>
+    語音翻譯會議紀錄
+  </h1>
+  <div class="toolbar">
+    <button id="btnStart" class="ctrl primary">▶ 開始錄音</button>
+    <button id="btnPause" class="ctrl warn" disabled>⏸ 暫停</button>
+    <button id="btnStop" class="ctrl danger" disabled>⏹ 結束</button>
+    <button id="btnClear" class="ctrl">🗑 清空</button>
+    <button id="btnExportTxt" class="ctrl">⬇ 匯出 .txt</button>
+    <button id="btnExportMd" class="ctrl">⬇ 匯出 .md</button>
+  </div>
+</header>
+
+<div id="warnBox" class="notice hide"></div>
+
+<div class="config">
+  <div class="field">
+    <label for="srcLang">語音輸入語言</label>
+    <select id="srcLang">
+      <option value="zh-TW">中文（繁體・台灣）</option>
+      <option value="nan-TW">台語（閩南語・實驗性）</option>
+      <option value="en-US">English (US)</option>
+      <option value="en-GB">English (UK)</option>
+      <option value="zh-CN">中文（簡體）</option>
+      <option value="ja-JP">日本語</option>
+      <option value="ko-KR">한국어</option>
+    </select>
+  </div>
+  <div class="field" style="flex:1; min-width: 280px;">
+    <label>翻譯目標語言（可多選）</label>
+    <div id="targetChips" class="targets">
+      <span class="chip" data-code="zh-TW">繁體中文</span>
+      <span class="chip" data-code="en">英文</span>
+      <span class="chip" data-code="ja">日文</span>
+      <span class="chip" data-code="ko">韓文</span>
+      <span class="chip" data-code="zh-CN">簡體中文</span>
+      <span class="chip" data-code="es">西班牙文</span>
+      <span class="chip" data-code="fr">法文</span>
+      <span class="chip" data-code="de">德文</span>
+    </div>
+  </div>
+  <div class="field">
+    <label for="meetingTitle">會議標題</label>
+    <input id="meetingTitle" type="text" placeholder="例：週會 2026-04-26" />
+  </div>
+</div>
+
+<main>
+  <div id="transcript">
+    <div id="emptyState" class="empty">
+      <h2>準備好開始錄音了嗎？</h2>
+      <p>點上方 <strong>▶ 開始錄音</strong>，系統會即時辨識你的語音並翻譯成你選擇的目標語言。</p>
+      <p style="font-size:13px;">提示：第一次使用時，瀏覽器會請求麥克風權限。請使用 <kbd>Chrome</kbd> 或 <kbd>Edge</kbd> 以獲得最佳支援。</p>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <span id="footStatus">待機中</span>
+  <span>翻譯由 MyMemory API 提供 · 語音辨識由瀏覽器提供</span>
+</footer>
+
+<script>
+(function(){
+  const $ = (id) => document.getElementById(id);
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  const state = {
+    recognition: null,
+    isRecording: false,
+    isPaused: false,
+    entries: [],
+    targets: new Set(['en']),
+    interimEl: null,
+    startTime: null,
+  };
+
+  // === Browser support check ===
+  if (!SR) {
+    showWarn('您的瀏覽器不支援 Web Speech API。請改用 Chrome 或 Edge 開啟此頁面。');
+    $('btnStart').disabled = true;
+  }
+
+  // === Default chip selection ===
+  document.querySelectorAll('#targetChips .chip').forEach(chip => {
+    if (state.targets.has(chip.dataset.code)) chip.classList.add('active');
+    chip.addEventListener('click', () => {
+      const code = chip.dataset.code;
+      if (state.targets.has(code)) {
+        state.targets.delete(code);
+        chip.classList.remove('active');
+      } else {
+        state.targets.add(code);
+        chip.classList.add('active');
+      }
+    });
+  });
+
+  // === Title default ===
+  const today = new Date().toISOString().slice(0,10);
+  $('meetingTitle').value = `會議紀錄 ${today}`;
+
+  // === Helpers ===
+  function showWarn(msg) {
+    const box = $('warnBox');
+    box.textContent = '⚠️ ' + msg;
+    box.classList.remove('hide');
+  }
+  function setStatus(text, mode) {
+    $('footStatus').textContent = text;
+    const dot = $('statusDot');
+    dot.classList.remove('live', 'paused');
+    if (mode === 'live') dot.classList.add('live');
+    else if (mode === 'paused') dot.classList.add('paused');
+  }
+  function timeStamp() {
+    const d = new Date();
+    return d.toTimeString().slice(0,8);
+  }
+  function elapsedStamp() {
+    if (!state.startTime) return '00:00:00';
+    const ms = Date.now() - state.startTime;
+    const s = Math.floor(ms/1000);
+    const hh = String(Math.floor(s/3600)).padStart(2,'0');
+    const mm = String(Math.floor((s%3600)/60)).padStart(2,'0');
+    const ss = String(s%60).padStart(2,'0');
+    return `${hh}:${mm}:${ss}`;
+  }
+  function ensureEmptyHidden() {
+    const e = $('emptyState'); if (e) e.remove();
+  }
+  function escapeHtml(s){
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // === MyMemory translate ===
+  async function translate(text, srcLang, targetLang) {
+    try {
+      const src = srcLang.split('-')[0]; // simplify, e.g. zh-TW -> zh
+      const tgt = targetLang;
+      // Special: nan-TW not supported by MyMemory, fall back to zh
+      const srcSafe = (src === 'nan') ? 'zh' : src;
+      if (srcSafe === tgt.split('-')[0] && srcSafe !== 'zh') return text;
+      const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${encodeURIComponent(srcSafe)}|${encodeURIComponent(tgt)}`;
+      const r = await fetch(url);
+      const j = await r.json();
+      if (j && j.responseData && j.responseData.translatedText) {
+        return j.responseData.translatedText;
+      }
+      return '[翻譯失敗]';
+    } catch (e) {
+      console.error(e);
+      return '[翻譯錯誤]';
+    }
+  }
+
+  const LANG_LABEL = {
+    'zh-TW': '繁中', 'zh-CN': '簡中', 'en': '英', 'ja': '日',
+    'ko': '韓', 'es': '西', 'fr': '法', 'de': '德'
+  };
+
+  // === Render ===
+  function addEntry(originalText) {
+    ensureEmptyHidden();
+    const entry = {
+      time: timeStamp(),
+      elapsed: elapsedStamp(),
+      original: originalText.trim(),
+      translations: {}
+    };
+    state.entries.push(entry);
+
+    const div = document.createElement('div');
+    div.className = 'entry';
+    div.innerHTML = `
+      <div class="time">[${entry.elapsed}] ${entry.time}</div>
+      <div class="original">${escapeHtml(entry.original)}</div>
+      <div class="translations"></div>
+    `;
+    $('transcript').appendChild(div);
+    div.scrollIntoView({ behavior: 'smooth', block: 'end' });
+
+    // translate to all targets
+    const trBox = div.querySelector('.translations');
+    const srcLang = $('srcLang').value;
+    state.targets.forEach(async (tgt) => {
+      const line = document.createElement('div');
+      line.className = 'tr-line';
+      line.innerHTML = `<span class="lang">${LANG_LABEL[tgt]||tgt}</span><span class="tr-text">翻譯中…</span>`;
+      trBox.appendChild(line);
+      const result = await translate(entry.original, srcLang, tgt);
+      entry.translations[tgt] = result;
+      line.querySelector('.tr-text').textContent = result;
+    });
+  }
+
+  function showInterim(text) {
+    if (!text.trim()) {
+      if (state.interimEl) { state.interimEl.remove(); state.interimEl = null; }
+      return;
+    }
+    if (!state.interimEl) {
+      state.interimEl = document.createElement('div');
+      state.interimEl.className = 'interim';
+      $('transcript').appendChild(state.interimEl);
+    }
+    state.interimEl.textContent = '… ' + text;
+    state.interimEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }
+
+  function clearInterim() {
+    if (state.interimEl) { state.interimEl.remove(); state.interimEl = null; }
+  }
+
+  // === Recognition control ===
+  function buildRecognition() {
+    const r = new SR();
+    r.lang = $('srcLang').value;
+    r.continuous = true;
+    r.interimResults = true;
+
+    r.onresult = (e) => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const res = e.results[i];
+        if (res.isFinal) {
+          clearInterim();
+          if (res[0].transcript.trim()) addEntry(res[0].transcript);
+        } else {
+          interim += res[0].transcript;
+        }
+      }
+      if (interim) showInterim(interim);
+    };
+
+    r.onerror = (e) => {
+      console.warn('SR error', e);
+      if (e.error === 'no-speech') return;
+      if (e.error === 'language-not-supported') {
+        showWarn(`此瀏覽器不支援所選語言（${r.lang}）。台語（nan-TW）支援度有限，建議改用「中文（繁體・台灣）」或英文。`);
+      }
+      setStatus('錯誤：' + e.error);
+    };
+
+    r.onend = () => {
+      // Auto restart unless user paused/stopped
+      if (state.isRecording && !state.isPaused) {
+        try { r.start(); } catch(_) {}
+      }
+    };
+
+    return r;
+  }
+
+  $('btnStart').addEventListener('click', () => {
+    if (!SR) return;
+    state.recognition = buildRecognition();
+    state.isRecording = true;
+    state.isPaused = false;
+    state.startTime = state.startTime || Date.now();
+    try { state.recognition.start(); } catch(_) {}
+    setStatus('錄音中', 'live');
+    $('btnStart').disabled = true;
+    $('btnPause').disabled = false;
+    $('btnStop').disabled = false;
+  });
+
+  $('btnPause').addEventListener('click', () => {
+    if (!state.recognition) return;
+    if (!state.isPaused) {
+      state.isPaused = true;
+      try { state.recognition.stop(); } catch(_) {}
+      setStatus('已暫停', 'paused');
+      $('btnPause').textContent = '▶ 繼續';
+    } else {
+      state.isPaused = false;
+      try { state.recognition.start(); } catch(_) {}
+      setStatus('錄音中', 'live');
+      $('btnPause').textContent = '⏸ 暫停';
+    }
+  });
+
+  $('btnStop').addEventListener('click', () => {
+    state.isRecording = false;
+    state.isPaused = false;
+    if (state.recognition) {
+      try { state.recognition.stop(); } catch(_) {}
+      state.recognition = null;
+    }
+    clearInterim();
+    setStatus('已結束');
+    $('btnStart').disabled = false;
+    $('btnStart').textContent = '▶ 重新開始';
+    $('btnPause').disabled = true;
+    $('btnStop').disabled = true;
+    $('btnPause').textContent = '⏸ 暫停';
+  });
+
+  $('btnClear').addEventListener('click', () => {
+    if (state.entries.length && !confirm('確定要清空所有紀錄嗎？')) return;
+    state.entries = [];
+    state.startTime = null;
+    document.querySelectorAll('#transcript .entry, #transcript .interim').forEach(n => n.remove());
+    if (!$('emptyState')) {
+      const e = document.createElement('div');
+      e.id = 'emptyState';
+      e.className = 'empty';
+      e.innerHTML = '<h2>準備好開始錄音了嗎？</h2><p>點上方 <strong>▶ 開始錄音</strong> 即可開始。</p>';
+      $('transcript').appendChild(e);
+    }
+    setStatus('待機中');
+  });
+
+  // === Export ===
+  function buildText(format) {
+    const title = $('meetingTitle').value || '會議紀錄';
+    const date = new Date().toLocaleString();
+    let out = '';
+    if (format === 'md') {
+      out += `# ${title}\n\n`;
+      out += `**日期**：${date}  \n`;
+      out += `**語音語言**：${$('srcLang').value}  \n`;
+      out += `**翻譯語言**：${[...state.targets].map(c=>LANG_LABEL[c]||c).join('、')}\n\n---\n\n`;
+      state.entries.forEach((e, i) => {
+        out += `### [${e.elapsed}] ${e.time}\n\n`;
+        out += `**原文**：${e.original}\n\n`;
+        Object.entries(e.translations).forEach(([k,v]) => {
+          out += `- **${LANG_LABEL[k]||k}**：${v}\n`;
+        });
+        out += `\n`;
+      });
+    } else {
+      out += `${title}\n`;
+      out += `日期：${date}\n`;
+      out += `語音語言：${$('srcLang').value}\n`;
+      out += `翻譯語言：${[...state.targets].map(c=>LANG_LABEL[c]||c).join('、')}\n`;
+      out += `${'='.repeat(60)}\n\n`;
+      state.entries.forEach(e => {
+        out += `[${e.elapsed}] ${e.time}\n`;
+        out += `原文：${e.original}\n`;
+        Object.entries(e.translations).forEach(([k,v]) => {
+          out += `${LANG_LABEL[k]||k}：${v}\n`;
+        });
+        out += `\n`;
+      });
+    }
+    return out;
+  }
+
+  function download(filename, content) {
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
+  $('btnExportTxt').addEventListener('click', () => {
+    if (!state.entries.length) { alert('還沒有任何紀錄可以匯出'); return; }
+    const title = ($('meetingTitle').value || 'meeting').replace(/[^\w一-龥\-]/g,'_');
+    download(`${title}.txt`, buildText('txt'));
+  });
+  $('btnExportMd').addEventListener('click', () => {
+    if (!state.entries.length) { alert('還沒有任何紀錄可以匯出'); return; }
+    const title = ($('meetingTitle').value || 'meeting').replace(/[^\w一-龥\-]/g,'_');
+    download(`${title}.md`, buildText('md'));
+  });
+
+  // Update lang of recognition if user changes during recording
+  $('srcLang').addEventListener('change', () => {
+    if (state.recognition) {
+      state.recognition.lang = $('srcLang').value;
+      // Restart so new lang takes effect
+      try { state.recognition.stop(); } catch(_) {}
+    }
+  });
+
+  // Show note about Taiwanese support
+  if (navigator.userAgent.includes('Safari') && !navigator.userAgent.includes('Chrome')) {
+    showWarn('Safari 對 Web Speech API 支援不完整，建議改用 Chrome 或 Edge。');
+  }
+})();
+</script>
+</body>
+</html>

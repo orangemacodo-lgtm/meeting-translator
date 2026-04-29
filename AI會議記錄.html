@@ -111,6 +111,16 @@ input[type=range]::-moz-range-thumb{
 /* ---- Visualizer ---- */
 #viz{width:100%;height:72px;border-radius:var(--r-sm);background:var(--surface2);display:block}
 
+/* ---- Mode Toggle ---- */
+.mode-row{display:flex;gap:4px;margin-bottom:10px;background:var(--surface2);border-radius:var(--r-sm);padding:3px}
+.mode-btn{
+  flex:1;padding:7px 6px;border:none;border-radius:4px;cursor:pointer;
+  font-size:0.82rem;font-weight:500;background:transparent;color:var(--text2);transition:all .18s;
+}
+.mode-btn.on{background:var(--accent);color:#fff;box-shadow:0 1px 6px var(--accent-glow)}
+.whisper-prog{display:none;margin-top:8px}
+.whisper-prog.show{display:block}
+
 /* ---- Record Controls ---- */
 .rec-row{display:flex;align-items:center;justify-content:center;gap:16px;padding:10px 0}
 .btn-rec{
@@ -222,6 +232,21 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
 }
 .compat-banner.show{display:block}
 
+/* ---- Audio Result ---- */
+#audioResult{
+  display:none;margin-top:10px;background:rgba(63,185,80,.07);
+  border:1px solid rgba(63,185,80,.25);border-radius:var(--r-sm);padding:10px 12px;
+}
+#audioResult.show{display:block}
+.ar-label{font-size:0.78rem;color:var(--green);margin-bottom:6px;font-weight:500}
+.ar-player{width:100%;margin-bottom:8px;border-radius:var(--r-sm)}
+.btn-save-audio{
+  width:100%;padding:9px;border-radius:var(--r-sm);border:1px solid rgba(63,185,80,.4);
+  background:rgba(63,185,80,.1);color:var(--green);cursor:pointer;font-size:0.88rem;
+  font-weight:500;transition:all .18s;
+}
+.btn-save-audio:hover{background:rgba(63,185,80,.2)}
+
 /* ---- Responsive ---- */
 @media(max-width:480px){
   .btn-rec{width:58px;height:58px}
@@ -264,11 +289,20 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
 
 <!-- ============ Live Recording Panel ============ -->
 <div class="card" id="panel-live">
-  <div class="compat-banner" id="compatBanner">
-    ⚠️ 即時語音識別需要 Chrome 或 Edge 瀏覽器。目前瀏覽器不支援，請改用「上傳音檔」功能。
+  <!-- 模式切換 -->
+  <div class="mode-row">
+    <button class="mode-btn" id="modeBtnLive" onclick="setRecMode('live')">⚡ 即時識別（Chrome）</button>
+    <button class="mode-btn on" id="modeBtnWhisper" onclick="setRecMode('whisper')">🤖 Whisper 離線（全裝置）</button>
   </div>
 
-  <div class="ctrl-row">
+  <div class="compat-banner" id="compatBanner">
+    ⚠️ 目前瀏覽器不支援即時識別，已自動切換為 Whisper 離線模式。
+  </div>
+  <div class="compat-banner" id="androidWarnBanner" style="display:none;background:#7c3a00;">
+    ⚠️ Android 裝置即時識別穩定性有限，7分鐘可能只抓到幾句。建議改用「Whisper 離線」獲得完整記錄。
+  </div>
+
+  <div class="ctrl-row" id="liveLangRow">
     <div class="ctrl-group">
       <div class="ctrl-label">🌐 識別語言</div>
       <select id="liveLang">
@@ -325,6 +359,37 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
     <span id="statusTxt">點擊紅色按鈕開始錄音</span>
   </div>
 
+  <!-- Whisper 模式選項 -->
+  <div id="whisperModeOpts" style="display:none;margin-top:8px;margin-bottom:8px">
+    <div class="ctrl-row">
+      <div class="ctrl-group">
+        <div class="ctrl-label">🤖 Whisper 模型</div>
+        <select id="liveWhisperModel">
+          <option value="Xenova/whisper-tiny">Tiny（最快，~75MB）</option>
+          <option value="Xenova/whisper-base" selected>Base（均衡，~140MB）</option>
+          <option value="Xenova/whisper-small">Small（高品質，~240MB）</option>
+        </select>
+      </div>
+      <div class="ctrl-group">
+        <div class="ctrl-label">🌐 錄音語言</div>
+        <select id="liveWhisperLang">
+          <option value="auto">自動偵測（易出錯）</option>
+          <option value="zh" selected>中文（推薦）</option>
+          <option value="en">English</option>
+          <option value="ja">日本語</option>
+          <option value="ko">한국어</option>
+          <option value="fr">Français</option>
+          <option value="de">Deutsch</option>
+          <option value="es">Español</option>
+        </select>
+      </div>
+    </div>
+    <div class="whisper-prog" id="liveWhisperProg">
+      <div class="prog-text" id="liveProgText">準備中...</div>
+      <div class="prog-bg"><div class="prog-fill" id="liveProgFill"></div></div>
+    </div>
+  </div>
+
   <div class="opt-row">
     <label class="opt-item">
       <input type="checkbox" id="chkTimestamp" checked />
@@ -338,6 +403,17 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
       <input type="checkbox" id="chkSpeaker" />
       <span class="opt-label">標示發言輪次</span>
     </label>
+    <label class="opt-item">
+      <input type="checkbox" id="chkSaveAudio" checked />
+      <span class="opt-label">同時錄製音檔</span>
+    </label>
+  </div>
+
+  <!-- 音檔結果區 -->
+  <div id="audioResult">
+    <div class="ar-label">🎵 音檔已準備好</div>
+    <audio class="ar-player" id="arPlayer" controls></audio>
+    <button class="btn-save-audio" onclick="saveAudio()">⬇️ 下載音檔（WebM）</button>
   </div>
 </div>
 
@@ -356,8 +432,8 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
     <div class="ctrl-group">
       <div class="ctrl-label">🌐 音檔語言</div>
       <select id="uploadLang">
-        <option value="auto">自動偵測</option>
-        <option value="zh">中文</option>
+        <option value="auto">自動偵測（易出錯）</option>
+        <option value="zh" selected>中文（推薦）</option>
         <option value="en">English</option>
         <option value="ja">日本語</option>
         <option value="ko">한국어</option>
@@ -446,38 +522,64 @@ audio{width:100%;margin-top:8px;border-radius:var(--r-sm)}
 // ──────────────────────────────────────────────
 // State
 // ──────────────────────────────────────────────
-let recognition = null;
-let isRec = false, isPaused = false;
-let elapsed = 0, timerID = null;
-let audioCtx = null, analyser = null, gainNode = null, animID = null, micStream = null;
-let finalTx = '', speakerIdx = 0;
-let selectedFile = null;
-let whisperCache = {};
+var recognition = null;
+var isRec = false, isPaused = false;
+var elapsed = 0, timerID = null;
+var audioCtx = null, analyser = null, gainNode = null, animID = null, micStream = null;
+var finalTx = '', speakerIdx = 0;
+var selectedFile = null;
+var whisperCache = {};
+var mediaRecorder = null, audioChunks = [], allAudioChunks = [], lastAudioBlob = null;
+var recMode = 'whisper'; // 'live' | 'whisper'
+var wakeLock = null;
+var wasRecInBackground = false;
+var chunkInterval = null, chunkCount = 0, activeMime = '';
 
 // ──────────────────────────────────────────────
 // Init
 // ──────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', function() {
   setDate();
   checkCompat();
   setupDnD();
   setupSliders();
   setupTranscript();
+  // 預設 Whisper 模式（若 checkCompat 尚未切換）
+  if (recMode !== 'live') setRecMode('whisper');
+  // 背景預載 Whisper 模型（延遲 3 秒避免阻塞頁面渲染）
+  setTimeout(function() { preloadWhisperModel(); }, 3000);
 });
 
 function setDate() {
-  const d = new Date();
+  var d = new Date();
   document.getElementById('dateChip').textContent =
     '📅 ' + d.toLocaleDateString('zh-TW', {year:'numeric',month:'long',day:'numeric',weekday:'short'});
 }
 
 function checkCompat() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) {
     document.getElementById('compatBanner').classList.add('show');
     document.getElementById('compatBadge').style.display = 'block';
-    document.getElementById('btnRec').disabled = true;
-    document.getElementById('statusTxt').textContent = '瀏覽器不支援語音識別，請使用上傳音檔功能';
+    setRecMode('whisper');
+  }
+}
+
+function setRecMode(mode) {
+  recMode = mode;
+  document.getElementById('modeBtnLive').classList.toggle('on', mode === 'live');
+  document.getElementById('modeBtnWhisper').classList.toggle('on', mode === 'whisper');
+  document.getElementById('whisperModeOpts').style.display = mode === 'whisper' ? 'block' : 'none';
+  document.getElementById('liveLangRow').style.display = mode === 'live' ? 'flex' : 'none';
+  var androidWarn = document.getElementById('androidWarnBanner');
+  if (mode === 'live') {
+    var isAndroid = /Android/i.test(navigator.userAgent);
+    if (androidWarn) androidWarn.style.display = isAndroid ? 'block' : 'none';
+    setStatus('', '點擊紅色按鈕開始錄音');
+  } else {
+    if (androidWarn) androidWarn.style.display = 'none';
+    var ready = whisperCache[document.getElementById('whisperModel') ? document.getElementById('whisperModel').value : ''];
+    setStatus('', ready ? '✅ 模型已就緒，點擊錄音' : '點擊錄音，每30秒自動轉錄一次');
   }
 }
 
@@ -485,7 +587,7 @@ function checkCompat() {
 // Tab
 // ──────────────────────────────────────────────
 function switchTab(t) {
-  ['live','upload'].forEach(id => {
+  ['live','upload'].forEach(function(id) {
     document.getElementById('tab-'+id).classList.toggle('on', id === t);
     document.getElementById('panel-'+id).style.display = id === t ? 'block' : 'none';
   });
@@ -495,27 +597,27 @@ function switchTab(t) {
 // Sliders
 // ──────────────────────────────────────────────
 function setupSliders() {
-  const gs = document.getElementById('gainSlider');
-  const gv = document.getElementById('gainVal');
-  gs.addEventListener('input', () => {
+  var gs = document.getElementById('gainSlider');
+  var gv = document.getElementById('gainVal');
+  gs.addEventListener('input', function() {
     gv.textContent = parseFloat(gs.value) + 'x';
     if (gainNode) gainNode.gain.value = parseFloat(gs.value);
   });
 
-  const ug = document.getElementById('uploadGain');
-  const ugv = document.getElementById('uploadGainVal');
-  ug.addEventListener('input', () => { ugv.textContent = parseFloat(ug.value) + 'x'; });
+  var ug = document.getElementById('uploadGain');
+  var ugv = document.getElementById('uploadGainVal');
+  ug.addEventListener('input', function() { ugv.textContent = parseFloat(ug.value) + 'x'; });
 }
 
 // ──────────────────────────────────────────────
 // Audio / Visualizer
 // ──────────────────────────────────────────────
-async function initAudio(stream) {
-  audioCtx = new AudioContext();
+function initAudio(stream) {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   analyser = audioCtx.createAnalyser();
   gainNode = audioCtx.createGain();
   analyser.fftSize = 512;
-  const src = audioCtx.createMediaStreamSource(stream);
+  var src = audioCtx.createMediaStreamSource(stream);
   gainNode.gain.value = parseFloat(document.getElementById('gainSlider').value);
   src.connect(gainNode);
   gainNode.connect(analyser);
@@ -523,11 +625,11 @@ async function initAudio(stream) {
 }
 
 function drawViz() {
-  const canvas = document.getElementById('viz');
+  var canvas = document.getElementById('viz');
   canvas.width = canvas.offsetWidth;
   canvas.height = canvas.offsetHeight;
-  const ctx = canvas.getContext('2d');
-  const buf = new Uint8Array(analyser.frequencyBinCount);
+  var ctx = canvas.getContext('2d');
+  var buf = new Uint8Array(analyser.frequencyBinCount);
 
   function frame() {
     animID = requestAnimationFrame(frame);
@@ -537,10 +639,10 @@ function drawViz() {
     ctx.lineWidth = 1.8;
     ctx.strokeStyle = isRec ? '#f85149' : '#7c6af7';
     ctx.beginPath();
-    const sw = canvas.width / buf.length;
-    for (let i = 0; i < buf.length; i++) {
-      const y = (buf[i] / 128.0) * canvas.height / 2;
-      i === 0 ? ctx.moveTo(i * sw, y) : ctx.lineTo(i * sw, y);
+    var sw = canvas.width / buf.length;
+    for (var i = 0; i < buf.length; i++) {
+      var y = (buf[i] / 128.0) * canvas.height / 2;
+      if (i === 0) ctx.moveTo(i * sw, y); else ctx.lineTo(i * sw, y);
     }
     ctx.lineTo(canvas.width, canvas.height / 2);
     ctx.stroke();
@@ -550,79 +652,360 @@ function drawViz() {
 
 function clearViz() {
   if (animID) { cancelAnimationFrame(animID); animID = null; }
-  const canvas = document.getElementById('viz');
-  const ctx = canvas.getContext('2d');
+  var canvas = document.getElementById('viz');
+  var ctx = canvas.getContext('2d');
   ctx.fillStyle = '#21262d';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
 // ──────────────────────────────────────────────
-// Recording
+// Toggle Recording
 // ──────────────────────────────────────────────
-async function toggleRec() {
-  isRec ? stopRec() : await startRec();
+function toggleRec() {
+  if (isRec) {
+    if (recMode === 'whisper') {
+      stopWhisperRec();
+    } else {
+      stopRec();
+    }
+  } else {
+    if (recMode === 'whisper') {
+      startWhisperRec();
+    } else {
+      startRec();
+    }
+  }
 }
 
-async function startRec() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return;
+// ── Whisper 錄音模式（邊錄邊轉，每30秒自動轉一次）──
 
-  try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 48000 } });
-    await initAudio(micStream);
-  } catch(e) {
+function loadWhisperPipeline(modelId, pf, pt) {
+  if (whisperCache[modelId]) return Promise.resolve(whisperCache[modelId]);
+  return import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2').then(function(mod) {
+    var env = mod.env;
+    env.allowLocalModels = false;
+    env.useBrowserCache = true;
+    return mod.pipeline('automatic-speech-recognition', modelId, {
+      quantized: true,
+      progress_callback: function(p) {
+        if (p.status === 'downloading' || p.status === 'progress') {
+          if (pf) pf.style.width = (5 + (p.progress||0) * 0.75) + '%';
+          if (pt) pt.textContent = '下載模型：' + Math.round(p.progress||0) + '%';
+        } else if (p.status === 'loading') {
+          if (pf) pf.style.width = '82%';
+          if (pt) pt.textContent = '載入模型至記憶體...';
+        }
+      }
+    });
+  }).then(function(pipe) {
+    whisperCache[modelId] = pipe;
+    return pipe;
+  });
+}
+
+function transcribeBlob(blob, pipe, segLabel, isFinal) {
+  var prog = document.getElementById('liveWhisperProg');
+  var pf = document.getElementById('liveProgFill');
+  var pt = document.getElementById('liveProgText');
+  prog.classList.add('show');
+  pf.style.width = '10%';
+  pt.textContent = segLabel + ' 解碼中...';
+
+  var lang = document.getElementById('liveWhisperLang').value;
+
+  return blob.arrayBuffer().then(function(buf) {
+    var tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
+    return tmpCtx.decodeAudioData(buf).then(function(decoded) {
+      tmpCtx.close();
+      var TARGET = 16000;
+      var offCtx = new OfflineAudioContext(1, Math.ceil(decoded.duration * TARGET), TARGET);
+      var src = offCtx.createBufferSource();
+      src.buffer = decoded;
+      var gn = offCtx.createGain();
+      gn.gain.value = parseFloat(document.getElementById('gainSlider').value);
+      src.connect(gn); gn.connect(offCtx.destination); src.start(0);
+      return offCtx.startRendering();
+    });
+  }).then(function(resampled) {
+    pf.style.width = '60%';
+    pt.textContent = segLabel + ' 轉錄中...';
+    var audioData = resampled.getChannelData(0);
+    var opts = {
+      task: 'transcribe',
+      chunk_length_s: 30, stride_length_s: 3,
+      return_timestamps: false,
+      condition_on_previous_text: false,
+      initial_prompt: '以下是繁體中文（台灣用語）的會議記錄。'
+    };
+    if (lang !== 'auto') opts.language = lang; else opts.language = 'zh';
+    return pipe(audioData, opts);
+  }).then(function(result) {
+    pf.style.width = '100%';
+    var out = (result.text || '').trim();
+    if (!out) { pt.textContent = segLabel + '：無語音'; setTimeout(function() { prog.classList.remove('show'); }, 1500); return; }
+
+    // 幻覺偵測（單字重複 + 短語重複）
+    var clean = out.replace(/\s/g, '');
+    var isHallucination = false;
+    if (clean.length >= 8) {
+      // 1. 單字頻率 > 35%
+      var freq = {};
+      for (var ci = 0; ci < clean.length; ci++) freq[clean[ci]] = (freq[clean[ci]]||0)+1;
+      var maxF = 0; for (var k in freq) if (freq[k] > maxF) maxF = freq[k];
+      if (maxF / clean.length > 0.35) isHallucination = true;
+      // 2. 短語重複：2~8字的詞組重複5次以上
+      if (!isHallucination && /(.{2,8})\1{4,}/.test(clean)) isHallucination = true;
+    }
+    if (isHallucination) {
+      pt.textContent = '⚠️ ' + segLabel + '：偵測到重複幻覺，已略過';
+      toast('⚠️ Whisper 產生重複幻覺，該段已跳過。可試調高麥克風增益或換 Small 模型', 5000);
+      setTimeout(function() { prog.classList.remove('show'); }, 3000);
+      return;
+    }
+
+    var ts = document.getElementById('chkTimestamp').checked ? '[' + fmt(elapsed) + '] ' : '';
+    finalTx += ts + out + '\n';
+    syncTx();
+    pt.textContent = '✅ ' + segLabel + ' 完成';
+    setTimeout(function() { prog.classList.remove('show'); }, 2000);
+
+    if (isFinal) {
+      setStatus('ok', '轉錄完成，共 ' + chunkCount + ' 段');
+      elapsed = 0; document.getElementById('timer').textContent = '00:00';
+    }
+  }).catch(function(err) {
+    pt.textContent = '❌ ' + segLabel + '：' + err.message;
+    pf.style.width = '0%';
+    console.error(err);
+    setTimeout(function() { prog.classList.remove('show'); }, 3000);
+  });
+}
+
+function startWhisperRec() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setStatus('', '❌ 瀏覽器不支援麥克風存取'); return;
+  }
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+    acquireWakeLock();
+    micStream = stream;
+    initAudio(stream);
+    audioChunks = []; allAudioChunks = []; lastAudioBlob = null; chunkCount = 0;
+    document.getElementById('audioResult').classList.remove('show');
+
+    var isAndroidRec = /Android/i.test(navigator.userAgent);
+    var types = isAndroidRec
+      ? ['audio/mp4;codecs=mp4a.40.2','audio/mp4','audio/webm;codecs=opus','audio/webm']
+      : ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4;codecs=mp4a.40.2'];
+    activeMime = '';
+    for (var i = 0; i < types.length; i++) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(types[i])) { activeMime = types[i]; break; }
+    }
+    try { mediaRecorder = new MediaRecorder(micStream, activeMime ? {mimeType: activeMime} : {}); }
+    catch(e) { mediaRecorder = new MediaRecorder(micStream); activeMime = ''; }
+    mediaRecorder.ondataavailable = function(e) { if (e.data && e.data.size > 0) { audioChunks.push(e.data); allAudioChunks.push(e.data); } };
+    mediaRecorder.start(500);
+
+    isRec = true; startTimer(); uiRec(true);
+
+    // 預先載入模型
+    var modelId = document.getElementById('liveWhisperModel').value;
+    var pf = document.getElementById('liveProgFill');
+    var pt = document.getElementById('liveProgText');
+    document.getElementById('liveWhisperProg').classList.add('show');
+    pf.style.width = '3%';
+    pt.textContent = '載入 Whisper 模型（首次需下載）...';
+    setStatus('rec', '模型載入中，請稍候...');
+
+    loadWhisperPipeline(modelId, pf, pt).then(function(pipe) {
+      setStatus('rec', '錄音中，每30秒自動轉錄...');
+      pt.textContent = '✅ 模型就緒，邊錄邊轉';
+      pf.style.width = '100%';
+      setTimeout(function() { document.getElementById('liveWhisperProg').classList.remove('show'); }, 2000);
+
+      // 每30秒自動切段轉錄
+      chunkInterval = setInterval(function() {
+        if (!isRec || audioChunks.length === 0) return;
+        chunkCount++;
+        var batch = audioChunks.splice(0); // 取走目前所有 chunks，清空陣列
+        var blob = new Blob(batch, { type: activeMime || 'audio/webm' });
+        transcribeBlob(blob, pipe, '第' + chunkCount + '段', false);
+      }, 30000);
+
+    }).catch(function(err) {
+      setStatus('', '❌ 模型載入失敗：' + err.message);
+      pt.textContent = '❌ 載入失敗：' + err.message;
+    });
+
+  }).catch(function(e) {
     setStatus('', '❌ 無法取得麥克風：' + e.message);
+  });
+}
+
+function stopWhisperRec() {
+  isRec = false;
+  releaseWakeLock();
+  stopTimer();
+  if (chunkInterval) { clearInterval(chunkInterval); chunkInterval = null; }
+  if (micStream) { micStream.getTracks().forEach(function(t) { t.stop(); }); micStream = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  gainNode = null; analyser = null;
+  clearViz(); uiRec(false);
+
+  var modelId = document.getElementById('liveWhisperModel').value;
+  var pipe = whisperCache[modelId];
+
+  function finishRemaining() {
+    if (audioChunks.length === 0) {
+      setStatus('ok', chunkCount > 0 ? '轉錄完成，共 ' + chunkCount + ' 段' : '未收到音訊');
+      return;
+    }
+    chunkCount++;
+    var blob = new Blob(audioChunks.splice(0), { type: activeMime || 'audio/webm' });
+    // 用完整錄音 allAudioChunks 存檔（避免只存最後一段殘缺 WebM）
+    lastAudioBlob = new Blob(allAudioChunks, { type: activeMime || 'audio/webm' });
+    document.getElementById('arPlayer').src = URL.createObjectURL(lastAudioBlob);
+    document.getElementById('audioResult').classList.add('show');
+    setStatus('', '轉錄最後一段中...');
+    if (pipe) {
+      transcribeBlob(blob, pipe, '最後一段', true);
+    } else {
+      // 模型還沒載入完（錄太短），重新載入後轉
+      setStatus('', '載入模型後轉錄...');
+      loadWhisperPipeline(modelId,
+        document.getElementById('liveProgFill'),
+        document.getElementById('liveProgText')
+      ).then(function(p) {
+        transcribeBlob(blob, p, '最後一段', true);
+      }).catch(function(err) { setStatus('', '轉錄失敗：' + err.message); });
+    }
+  }
+
+  if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+    finishRemaining(); return;
+  }
+  mediaRecorder.onstop = function() { mediaRecorder = null; finishRemaining(); };
+  mediaRecorder.stop();
+}
+
+// ── 即時識別模式（Chrome / Android）──
+function startRec() {
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    setStatus('', '❌ 此瀏覽器不支援即時識別，請改用 Whisper 模式');
     return;
   }
 
-  recognition = new SR();
-  recognition.lang = document.getElementById('liveLang').value;
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.maxAlternatives = 1;
+  var restartCount = 0;
+  var lastFinalTx = ''; // 防重複：記錄上一句已加入的文字
 
-  recognition.onresult = (e) => {
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const tx = e.results[i][0].transcript.trim();
-      if (e.results[i].isFinal && tx) {
-        const ts = document.getElementById('chkTimestamp').checked ? `[${fmt(elapsed)}] ` : '';
-        const sp = document.getElementById('chkSpeaker').checked ? `發言者${speakerIdx+1}：` : '';
-        const nl = document.getElementById('chkNewline').checked ? '\n' : ' ';
+  function buildRecognition() {
+    var r = new SR();
+    r.lang = document.getElementById('liveLang').value;
+    r.continuous = true;
+    r.interimResults = false; // Android 關掉 interim，避免重複觸發
+    r.maxAlternatives = 1;
+
+    r.onstart = function() {
+      restartCount = 0;
+      setStatus('rec', '錄音中，正在識別...');
+    };
+
+    r.onresult = function(e) {
+      restartCount = 0; // 成功識別後重置重試計數
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        if (!e.results[i].isFinal) continue;
+        var tx = e.results[i][0].transcript.trim();
+        if (!tx) continue;
+        // 去重：與上一句完全相同就跳過
+        if (tx === lastFinalTx) continue;
+        lastFinalTx = tx;
+        var ts = document.getElementById('chkTimestamp').checked ? '[' + fmt(elapsed) + '] ' : '';
+        var sp = document.getElementById('chkSpeaker').checked ? '發言者' + (speakerIdx+1) + '：' : '';
+        var nl = document.getElementById('chkNewline').checked ? '\n' : ' ';
         finalTx += ts + sp + tx + nl;
         if (document.getElementById('chkSpeaker').checked) speakerIdx = (speakerIdx + 1) % 4;
         syncTx();
       }
-    }
-  };
+    };
 
-  recognition.onerror = (e) => {
-    if (['no-speech','aborted'].includes(e.error)) return;
-    setStatus('', '識別錯誤：' + e.error);
-  };
+    r.onerror = function(e) {
+      if (e.error === 'aborted') return;
+      if (e.error === 'no-speech') return;
+      if (e.error === 'network') { setStatus('rec', '⚠️ 網路不穩，重試中...'); return; }
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        setStatus('', '❌ 麥克風權限被拒絕，請在瀏覽器設定允許');
+        isRec = false; stopRec(); return;
+      }
+      setStatus('rec', '識別錯誤(' + e.error + ')，重試中...');
+    };
 
-  recognition.onend = () => {
-    if (isRec && !isPaused) {
-      setTimeout(() => { try { recognition.start(); } catch(e) {} }, 150);
-    }
-  };
+    r.onend = function() {
+      if (!isRec || isPaused) return;
+      restartCount++;
+      var delay = 50; // 固定 50ms，最小化漏字視窗
+      setTimeout(function() {
+        if (!isRec || isPaused) return;
+        try {
+          recognition = buildRecognition();
+          recognition.start();
+        } catch(err) {
+          setTimeout(function() {
+            if (!isRec || isPaused) return;
+            try { recognition = buildRecognition(); recognition.start(); } catch(e2) {}
+          }, 800);
+        }
+      }, delay);
+    };
 
-  recognition.start();
+    return r;
+  }
+
+  // ★ 即時識別模式：完全不呼叫 getUserMedia，讓 SpeechRecognition 獨佔麥克風
+  // （Android Chrome 只要有其他程序持有麥克風，識別就會靜默無輸出）
+  acquireWakeLock();
+  recognition = buildRecognition();
+  try {
+    recognition.start();
+  } catch(e) {
+    setStatus('', '❌ 無法啟動語音識別：' + e.message);
+    return;
+  }
   isRec = true; isPaused = false;
   startTimer();
   uiRec(true);
-  setStatus('rec', '錄音中...');
+  setStatus('rec', '錄音中，正在識別...');
+  // 波形顯示在即時識別模式略過（避免麥克風衝突）
 }
 
 function stopRec() {
   isRec = false; isPaused = false;
+  releaseWakeLock();
   if (recognition) { recognition.abort(); recognition = null; }
-  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+
+  // 停止 MediaRecorder — 先存好 mimeType，避免 null 參照錯誤
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    var savedMimeType = mediaRecorder.mimeType || 'audio/webm';
+    var mr = mediaRecorder;
+    mr.onstop = function() {
+      if (audioChunks.length > 0) {
+        lastAudioBlob = new Blob(audioChunks, { type: savedMimeType });
+        var url = URL.createObjectURL(lastAudioBlob);
+        document.getElementById('arPlayer').src = url;
+        document.getElementById('audioResult').classList.add('show');
+        toast('🎵 音檔已準備好，可下載或試聽');
+      }
+    };
+    mr.stop();
+    mediaRecorder = null;
+  }
+
+  if (micStream) { micStream.getTracks().forEach(function(t) { t.stop(); }); micStream = null; }
   if (audioCtx) { audioCtx.close(); audioCtx = null; }
   gainNode = null; analyser = null;
   clearViz();
   stopTimer();
   uiRec(false);
-  setStatus('ok', `錄音完成，共 ${fmt(elapsed)}`);
+  setStatus('ok', '錄音完成，共 ' + fmt(elapsed));
   elapsed = 0;
   document.getElementById('timer').textContent = '00:00';
 }
@@ -631,13 +1014,14 @@ function togglePause() {
   if (!isRec) return;
   if (isPaused) {
     isPaused = false;
-    try { recognition.start(); } catch(e) {}
+    if (mediaRecorder && mediaRecorder.state === 'paused') mediaRecorder.resume();
     startTimer();
-    setStatus('rec', '錄音中...');
+    setStatus('rec', '錄音中，正在識別...');
     document.getElementById('btnPause').textContent = '⏸ 暫停';
   } else {
     isPaused = true;
-    recognition.abort();
+    if (recognition) recognition.abort();
+    if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.pause();
     stopTimer();
     setStatus('', '已暫停');
     document.getElementById('btnPause').textContent = '▶ 繼續';
@@ -648,7 +1032,8 @@ function togglePause() {
 // Timer
 // ──────────────────────────────────────────────
 function startTimer() {
-  timerID = setInterval(() => {
+  clearInterval(timerID);
+  timerID = setInterval(function() {
     elapsed++;
     document.getElementById('timer').textContent = fmt(elapsed);
   }, 1000);
@@ -662,8 +1047,8 @@ function fmt(s) {
 // UI
 // ──────────────────────────────────────────────
 function uiRec(on) {
-  const btn = document.getElementById('btnRec');
-  const pause = document.getElementById('btnPause');
+  var btn = document.getElementById('btnRec');
+  var pause = document.getElementById('btnPause');
   if (on) {
     btn.classList.add('on');
     btn.querySelector('svg').innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2"/>';
@@ -678,46 +1063,40 @@ function uiRec(on) {
 }
 
 function setStatus(type, txt) {
-  const dot = document.getElementById('dot');
+  var dot = document.getElementById('dot');
   dot.className = 'dot' + (type === 'rec' ? ' rec' : type === 'ok' ? ' ok' : '');
   document.getElementById('statusTxt').textContent = txt;
 }
 
-// ──────────────────────────────────────────────
-// Transcript
-// ──────────────────────────────────────────────
 function setupTranscript() {
   document.getElementById('transcript').addEventListener('input', updateWC);
 }
 
 function syncTx() {
-  const ta = document.getElementById('transcript');
+  var ta = document.getElementById('transcript');
   ta.value = finalTx;
   ta.scrollTop = ta.scrollHeight;
   updateWC();
 }
 
 function updateWC() {
-  const v = document.getElementById('transcript').value;
+  var v = document.getElementById('transcript').value;
   document.getElementById('wordCount').textContent = v.replace(/\s/g,'').length + ' 字';
 }
 
-// ──────────────────────────────────────────────
-// Drag & Drop
-// ──────────────────────────────────────────────
 function setupDnD() {
-  const dz = document.getElementById('dropZone');
-  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
-  dz.addEventListener('dragleave', () => dz.classList.remove('over'));
-  dz.addEventListener('drop', e => {
+  var dz = document.getElementById('dropZone');
+  dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.classList.add('over'); });
+  dz.addEventListener('dragleave', function() { dz.classList.remove('over'); });
+  dz.addEventListener('drop', function(e) {
     e.preventDefault(); dz.classList.remove('over');
-    const f = e.dataTransfer.files[0];
+    var f = e.dataTransfer.files[0];
     if (f) loadFile(f);
   });
 }
 
 function onFileSelect(e) {
-  const f = e.target.files[0];
+  var f = e.target.files[0];
   if (f) loadFile(f);
 }
 
@@ -726,211 +1105,373 @@ function loadFile(f) {
   document.getElementById('fiName').textContent = f.name;
   document.getElementById('fiSize').textContent = fmtBytes(f.size);
   document.getElementById('fileInfo').classList.add('show');
-  const player = document.getElementById('audioPlayer');
+  var player = document.getElementById('audioPlayer');
   player.src = URL.createObjectURL(f);
   player.style.display = 'block';
   document.getElementById('btnTranscribe').disabled = false;
-  toast('✅ 已選擇：' + f.name);
+  toast('已選擇：' + f.name);
 }
 
 function fmtBytes(b) {
   return b < 1048576 ? (b/1024).toFixed(1)+' KB' : (b/1048576).toFixed(1)+' MB';
 }
 
-// ──────────────────────────────────────────────
-// Whisper Transcription
-// ──────────────────────────────────────────────
-async function doTranscribe() {
-  if (!selectedFile) return;
-  const btn = document.getElementById('btnTranscribe');
-  btn.disabled = true;
-  btn.textContent = '⏳ 轉錄中...';
+// 備用解碼：用 HTMLAudioElement 處理 WebM/Opus（Android decodeAudioData 不支援時）
+function decodeAudioViaElement(file, gain, onProgress) {
+  return new Promise(function(resolve, reject) {
+    var url = URL.createObjectURL(file);
+    var audio = new Audio();
+    audio.preload = 'auto';
+    var ctx, processor, gainNode, source;
+    var buffers = [];
+    var done = false;
 
-  const pw = document.getElementById('progWrap');
-  const pf = document.getElementById('progFill');
-  const pt = document.getElementById('progText');
+    function finish() {
+      if (done) return;
+      done = true;
+      try { if (processor) processor.disconnect(); } catch(e) {}
+      try { if (gainNode) gainNode.disconnect(); } catch(e) {}
+      try { if (source) source.disconnect(); } catch(e) {}
+      if (ctx) ctx.close();
+      URL.revokeObjectURL(url);
+      var total = buffers.reduce(function(a, b) { return a + b.length; }, 0);
+      var result = new Float32Array(total);
+      var offset = 0;
+      buffers.forEach(function(b) { result.set(b, offset); offset += b.length; });
+      // 限幅
+      if (gain > 1) {
+        for (var i = 0; i < result.length; i++) result[i] = Math.max(-1, Math.min(1, result[i]));
+      }
+      resolve(result);
+    }
+
+    audio.oncanplay = function() {
+      try {
+        ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        gainNode = ctx.createGain();
+        gainNode.gain.value = gain;
+        processor = ctx.createScriptProcessor(8192, 1, 1);
+        source = ctx.createMediaElementSource(audio);
+        processor.onaudioprocess = function(e) {
+          buffers.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+          if (audio.duration && onProgress) onProgress(audio.currentTime / audio.duration);
+        };
+        source.connect(gainNode);
+        gainNode.connect(processor);
+        processor.connect(ctx.destination);
+        audio.play().catch(function(e) { reject(e); });
+      } catch(e) { URL.revokeObjectURL(url); reject(e); }
+    };
+    audio.onended = function() { finish(); };
+    audio.onerror = function() { URL.revokeObjectURL(url); reject(new Error('音檔格式不支援，請轉換為 MP3 或 WAV 後再試')); };
+    audio.src = url;
+  });
+}
+
+function doTranscribe() {
+  if (!selectedFile) return;
+  var btn = document.getElementById('btnTranscribe');
+  btn.disabled = true;
+  btn.textContent = '轉錄中...';
+
+  var pw = document.getElementById('progWrap');
+  var pf = document.getElementById('progFill');
+  var pt = document.getElementById('progText');
   pw.classList.add('show');
   pf.style.width = '0%';
 
-  try {
-    const modelId = document.getElementById('whisperModel').value;
-    const lang = document.getElementById('uploadLang').value;
-    const gain = parseFloat(document.getElementById('uploadGain').value);
+  var modelId = document.getElementById('whisperModel').value;
+  var lang = document.getElementById('uploadLang').value;
+  var gain = parseFloat(document.getElementById('uploadGain').value);
 
-    pt.textContent = '載入 AI 引擎中...';
-    pf.style.width = '3%';
+  pt.textContent = '載入 AI 引擎中...';
+  pf.style.width = '3%';
 
-    // Dynamic import
-    const mod = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
-    const { pipeline, env } = mod;
+  import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2').then(function(mod) {
+    var pipeline = mod.pipeline;
+    var env = mod.env;
     env.allowLocalModels = false;
     env.useBrowserCache = true;
 
-    pt.textContent = `下載 ${modelId.split('/')[1]} 模型（首次需下載）...`;
+    pt.textContent = '下載 ' + modelId.split('/')[1] + ' 模型（首次需下載）...';
     pf.style.width = '5%';
 
-    if (!whisperCache[modelId]) {
-      whisperCache[modelId] = await pipeline('automatic-speech-recognition', modelId, {
+    var p;
+    if (whisperCache[modelId]) {
+      p = Promise.resolve(whisperCache[modelId]);
+    } else {
+      p = pipeline('automatic-speech-recognition', modelId, {
         quantized: true,
-        progress_callback: (p) => {
-          if (p.status === 'downloading' || p.status === 'progress') {
-            const pct = (p.progress || 0);
+        progress_callback: function(prog) {
+          if (prog.status === 'downloading' || prog.status === 'progress') {
+            var pct = prog.progress || 0;
             pf.style.width = (5 + pct * 0.75) + '%';
-            pt.textContent = `下載模型：${Math.round(pct)}%（${fmtBytes(p.loaded||0)} / ${fmtBytes(p.total||0)}）`;
-          } else if (p.status === 'loading') {
+            pt.textContent = '下載模型：' + Math.round(pct) + '%（' + fmtBytes(prog.loaded||0) + ' / ' + fmtBytes(prog.total||0) + '）';
+          } else if (prog.status === 'loading') {
             pf.style.width = '82%';
             pt.textContent = '載入模型到記憶體中...';
           }
         }
+      }).then(function(pipe) { whisperCache[modelId] = pipe; return pipe; });
+    }
+
+    return p.then(function(transcriber) {
+      pf.style.width = '85%';
+      pt.textContent = '解碼音頻並轉錄中...';
+
+      // 解碼音頻為 Float32Array@16kHz（含備用路徑）
+      function decodeToFloat32() {
+        return selectedFile.arrayBuffer().then(function(buf) {
+          var tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
+          return tmpCtx.decodeAudioData(buf).then(function(decoded) {
+            tmpCtx.close();
+            var TARGET = 16000;
+            var offCtx = new OfflineAudioContext(1, Math.ceil(decoded.duration * TARGET), TARGET);
+            var src = offCtx.createBufferSource();
+            src.buffer = decoded;
+            var gn = offCtx.createGain();
+            gn.gain.value = gain;
+            src.connect(gn);
+            gn.connect(offCtx.destination);
+            src.start(0);
+            return offCtx.startRendering().then(function(r) {
+              var ad = r.getChannelData(0);
+              if (gain > 1) ad = Float32Array.from(ad, function(v) { return Math.max(-1, Math.min(1, v)); });
+              return ad;
+            });
+          }).catch(function() {
+            // decodeAudioData 失敗（常見於 Android + WebM/Opus）→ 備用解碼
+            tmpCtx.close();
+            pt.textContent = '備用解碼中，請稍候...';
+            return decodeAudioViaElement(selectedFile, gain, function(prog) {
+              pt.textContent = '解碼音訊 ' + Math.round(prog * 100) + '%...';
+              pf.style.width = (85 + prog * 4) + '%';
+            });
+          });
+        });
+      }
+
+      return decodeToFloat32().then(function(audioData) {
+          pf.style.width = '90%';
+          var opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true,
+                       condition_on_previous_text: false,
+                       initial_prompt: '以下是繁體中文（台灣用語）的會議記錄。' };
+          if (lang !== 'auto') opts.language = lang;
+          else opts.language = 'zh';
+          return transcriber(audioData, opts);
+      }).then(function(result) {
+        pf.style.width = '100%';
+        pt.textContent = '轉錄完成！';
+
+        var rawChunks = [];
+        if (result.chunks && result.chunks.length) {
+          result.chunks.forEach(function(c) {
+            rawChunks.push({ ts: c.timestamp && c.timestamp[0] != null ? '[' + fmt(Math.floor(c.timestamp[0])) + '] ' : '', text: c.text.trim() });
+          });
+        } else {
+          rawChunks.push({ ts: '', text: (result.text || '').trim() });
+        }
+
+        // 幻覺過濾（單字 + 短語重複）
+        var filtered = rawChunks.filter(function(c) {
+          if (!c.text) return false;
+          var cl = c.text.replace(/\s/g, '');
+          if (cl.length < 4) return true;
+          var fq = {}; for (var ci = 0; ci < cl.length; ci++) fq[cl[ci]] = (fq[cl[ci]]||0)+1;
+          var mf = 0; for (var k in fq) if (fq[k] > mf) mf = fq[k];
+          if (mf / cl.length > 0.35) return false;
+          if (/(.{2,8})\1{4,}/.test(cl)) return false;
+          return true;
+        });
+
+        if (filtered.length === 0) {
+          pt.textContent = '⚠️ 全段偵測為幻覺，已略過';
+          toast('⚠️ 轉錄結果全為重複幻覺，建議換 Small/Medium 模型或調高增益', 5000);
+          setTimeout(function() { pw.classList.remove('show'); }, 3000);
+          return;
+        }
+
+        var out = '\n── 檔案轉錄：' + selectedFile.name + ' ──\n';
+        filtered.forEach(function(c) { out += c.ts + c.text + '\n'; });
+
+        var ta = document.getElementById('transcript');
+        ta.value = (ta.value ? ta.value + '\n' : '') + out;
+        finalTx = ta.value;
+        ta.scrollTop = ta.scrollHeight;
+        updateWC();
+        toast('轉錄完成！');
+        setTimeout(function() { pw.classList.remove('show'); }, 3000);
       });
-    }
+    });
 
-    const transcriber = whisperCache[modelId];
-    pf.style.width = '85%';
-    pt.textContent = '解碼音頻並轉錄中...';
-
-    // Decode audio
-    const buf = await selectedFile.arrayBuffer();
-    const tmpCtx = new AudioContext();
-    let decoded;
-    try { decoded = await tmpCtx.decodeAudioData(buf); }
-    catch(e) { throw new Error('音頻解碼失敗：' + e.message); }
-    finally { tmpCtx.close(); }
-
-    // Resample to 16kHz mono
-    const TARGET = 16000;
-    const offCtx = new OfflineAudioContext(1, Math.ceil(decoded.duration * TARGET), TARGET);
-    const src = offCtx.createBufferSource();
-    src.buffer = decoded;
-    // Apply gain for quiet audio
-    const gn = offCtx.createGain();
-    gn.gain.value = gain;
-    src.connect(gn);
-    gn.connect(offCtx.destination);
-    src.start(0);
-    const resampled = await offCtx.startRendering();
-    let audioData = resampled.getChannelData(0);
-
-    // Clamp to [-1,1] after gain
-    if (gain > 1) {
-      audioData = Float32Array.from(audioData, v => Math.max(-1, Math.min(1, v)));
-    }
-
-    pf.style.width = '90%';
-
-    // Run Whisper
-    const opts = { task: 'transcribe', chunk_length_s: 30, stride_length_s: 5, return_timestamps: true };
-    if (lang !== 'auto') opts.language = lang;
-
-    const result = await transcriber(audioData, opts);
-    pf.style.width = '100%';
-    pt.textContent = '✅ 轉錄完成！';
-
-    // Format
-    let out = `\n── 檔案轉錄：${selectedFile.name} ──\n`;
-    if (result.chunks && result.chunks.length) {
-      result.chunks.forEach(c => {
-        const ts = c.timestamp && c.timestamp[0] != null ? `[${fmt(Math.floor(c.timestamp[0]))}] ` : '';
-        out += ts + c.text.trim() + '\n';
-      });
-    } else {
-      out += (result.text || '').trim() + '\n';
-    }
-
-    const ta = document.getElementById('transcript');
-    ta.value = (ta.value ? ta.value + '\n' : '') + out;
-    finalTx = ta.value;
-    ta.scrollTop = ta.scrollHeight;
-    updateWC();
-    toast('✅ 轉錄完成！');
-
-    setTimeout(() => pw.classList.remove('show'), 3000);
-
-  } catch(err) {
-    pt.textContent = '❌ 錯誤：' + err.message;
+  }).catch(function(err) {
+    pt.textContent = '錯誤：' + err.message;
     pf.style.width = '0%';
-    toast('❌ ' + err.message);
+    toast('錯誤：' + err.message);
     console.error(err);
-  }
-
-  btn.disabled = false;
-  btn.textContent = '✨ 開始轉錄';
+  }).finally(function() {
+    btn.disabled = false;
+    btn.textContent = '開始轉錄';
+  });
 }
 
-// ──────────────────────────────────────────────
-// Export
-// ──────────────────────────────────────────────
 function copyTx() {
-  const v = document.getElementById('transcript').value;
-  if (!v.trim()) { toast('📝 記錄為空'); return; }
-  navigator.clipboard.writeText(v).then(() => toast('✅ 已複製到剪貼板'));
-}
-
-function saveTxt() {
-  const v = document.getElementById('transcript').value;
-  if (!v.trim()) { toast('📝 記錄為空'); return; }
-  const title = document.getElementById('mtgTitle').value || '會議記錄';
-  const date = new Date().toISOString().slice(0,10);
-  dl(v, `${title}_${date}.txt`, 'text/plain;charset=utf-8');
-  toast('✅ 已儲存 TXT');
-}
-
-function saveFull() {
-  const v = document.getElementById('transcript').value;
-  if (!v.trim()) { toast('📝 記錄為空'); return; }
-  const title = document.getElementById('mtgTitle').value || '會議記錄';
-  const date = document.getElementById('dateChip').textContent.replace('📅 ','');
-  const ppl = document.getElementById('mtgParticipants').value;
-  const sep = '═'.repeat(44);
-  const content = [
-    sep,
-    `  會議記錄  Meeting Minutes`,
-    sep,
-    `會議主題：${title}`,
-    `日期時間：${date}`,
-    `與會人員：${ppl || '（未填寫）'}`,
-    sep,
-    '',
-    v.trim(),
-    '',
-    sep,
-    `本記錄由 AI 會議記錄系統自動生成 · ${new Date().toLocaleString('zh-TW')}`,
-    sep
-  ].join('\n');
-  dl(content, `${title}_完整記錄_${new Date().toISOString().slice(0,10)}.txt`, 'text/plain;charset=utf-8');
-  toast('✅ 已儲存完整會議記錄');
+  var v = document.getElementById('transcript').value;
+  if (!v.trim()) { toast('記錄為空'); return; }
+  navigator.clipboard.writeText(v).then(function() { toast('已複製到剪貼板'); });
 }
 
 function clearTx() {
-  if (!confirm('確定要清除所有記錄？此操作無法復原。')) return;
-  finalTx = ''; speakerIdx = 0;
+  if (!document.getElementById('transcript').value.trim()) { toast('記錄已是空白'); return; }
+  if (!confirm('確定要清除所有會議記錄嗎？')) return;
+  finalTx = '';
+  speakerIdx = 0;
   document.getElementById('transcript').value = '';
-  updateWC();
-  toast('🗑 已清除');
+  toast('已清除記錄');
 }
 
-function dl(text, name, type) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], {type}));
-  a.download = name;
+function saveTxt() {
+  var v = document.getElementById('transcript').value;
+  if (!v.trim()) { toast('記錄為空'); return; }
+  var title = document.getElementById('mtgTitle').value || '會議記錄';
+  var date = new Date().toISOString().slice(0,10);
+  dl(v, title + '_' + date + '.txt', 'text/plain;charset=utf-8');
+  toast('已儲存 TXT');
+}
+
+function saveFull() {
+  var v = document.getElementById('transcript').value;
+  if (!v.trim()) { toast('記錄為空'); return; }
+  var title = document.getElementById('mtgTitle').value || '會議記錄';
+  var date = document.getElementById('dateChip').textContent.replace('📅 ','');
+  var ppl = document.getElementById('mtgParticipants').value;
+  var sep = '============================================';
+  var content = [sep,'  會議記錄  Meeting Minutes',sep,
+    '會議主題：'+title,'日期時間：'+date,'與會人員：'+(ppl||'（未填寫）'),sep,'',
+    v.trim(),'',sep,
+    '本記錄由 AI 會議記錄系統自動生成 · '+new Date().toLocaleString('zh-TW')].join('\n');
+  dl(content, title + '_' + date + '_完整記錄.txt', 'text/plain;charset=utf-8');
+  toast('已儲存完整記錄');
+}
+
+function saveAudio() {
+  if (!lastAudioBlob) { toast('尚無可儲存的音檔'); return; }
+  var title = document.getElementById('mtgTitle').value || '會議錄音';
+  var date = new Date().toISOString().slice(0,10);
+  var blobType = lastAudioBlob.type || '';
+  var ext = blobType.includes('ogg') ? 'ogg' : blobType.includes('mp4') ? 'm4a' : 'webm';
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(lastAudioBlob);
+  a.download = title + '_' + date + '.' + ext;
   a.click();
+  toast('音檔已下載');
 }
 
-// ──────────────────────────────────────────────
-// Toast
-// ──────────────────────────────────────────────
-let toastTimer;
-function toast(msg, dur=2600) {
-  const el = document.getElementById('toast');
+
+function preloadWhisperModel() {
+  var sel = document.getElementById('whisperModel');
+  if (!sel) return;
+  var modelId = sel.value;
+  if (whisperCache[modelId]) {
+    setStatus('', '✅ 模型已就緒，點擊錄音');
+    return;
+  }
+  setStatus('', '⏳ 背景載入模型中...');
+  loadWhisperPipeline(modelId,
+    function(p) { // progress
+      if (p.status === 'downloading' || p.status === 'progress') {
+        var pct = p.progress ? Math.round(p.progress) : '';
+        setStatus('', '⬇️ 預載模型' + (pct ? ' ' + pct + '%' : ''));
+      }
+    },
+    function(pipe) { // done
+      if (recMode === 'whisper') setStatus('', '✅ 模型已就緒，點擊錄音');
+    }
+  );
+}
+
+function acquireWakeLock() {
+  if ('wakeLock' in navigator) {
+    navigator.wakeLock.request('screen').then(function(wl) {
+      wakeLock = wl;
+      wakeLock.addEventListener('release', function() { wakeLock = null; });
+    }).catch(function(e) { /* 裝置不支援或已拒絕，靜默略過 */ });
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLock) {
+    wakeLock.release().catch(function(){});
+    wakeLock = null;
+  }
+}
+
+var toastTimer;
+function toast(msg, dur) {
+  dur = dur || 2600;
+  var el = document.getElementById('toast');
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), dur);
+  toastTimer = setTimeout(function() { el.classList.remove('show'); }, dur);
 }
+document.addEventListener('visibilitychange', function() {
+  if (document.visibilityState === 'hidden') {
+    // 切到背景：記錄當時的錄音狀態
+    if (isRec) wasRecInBackground = true;
+  } else {
+    // 回到前景
+    if (wasRecInBackground && isRec) {
+      // 重新取得螢幕鎖
+      if (!wakeLock) acquireWakeLock();
 
-// Resize canvas on window resize
-window.addEventListener('resize', () => {
-  const c = document.getElementById('viz');
+      // 即時識別模式：SpeechRecognition 在背景必定中斷，回來要重啟
+      if (recMode === 'live') {
+        setTimeout(function() {
+          if (!isRec || isPaused) return;
+          try {
+            if (recognition) { try { recognition.abort(); } catch(e2) {} }
+            var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (SR) {
+              recognition = new SR();
+              recognition.lang = document.getElementById('liveLang').value;
+              recognition.continuous = true;
+              recognition.interimResults = false;
+              recognition.maxAlternatives = 1;
+              recognition.onresult = function(e) {
+                for (var i = e.resultIndex; i < e.results.length; i++) {
+                  if (!e.results[i].isFinal) continue;
+                  var tx = e.results[i][0].transcript.trim();
+                  if (!tx) continue;
+                  var ts = document.getElementById('chkTimestamp').checked ? '[' + fmt(elapsed) + '] ' : '';
+                  var sp = document.getElementById('chkSpeaker').checked ? '發言者' + (speakerIdx+1) + '：' : '';
+                  var nl = document.getElementById('chkNewline').checked ? '\n' : ' ';
+                  finalTx += ts + sp + tx + nl;
+                  if (document.getElementById('chkSpeaker').checked) speakerIdx = (speakerIdx + 1) % 4;
+                  syncTx();
+                }
+              };
+              recognition.onend = function() {
+                if (!isRec || isPaused) return;
+                try { recognition = new SR(); recognition.lang = document.getElementById('liveLang').value;
+                  recognition.continuous = true; recognition.interimResults = false;
+                  recognition.onend = this.onend; recognition.onresult = this.onresult;
+                  recognition.start();
+                } catch(e3) {}
+              };
+              recognition.start();
+              setStatus('rec', '🔄 回到前景，恢復識別中...');
+            }
+          } catch(e) { setStatus('rec', '錄音中，正在識別...'); }
+        }, 300);
+      }
+      // Whisper 模式：MediaRecorder 在背景通常繼續錄，不需額外處理
+    }
+    wasRecInBackground = false;
+  }
+});
+window.addEventListener('resize', function() {
+  var c = document.getElementById('viz');
   if (c) { c.width = c.offsetWidth; }
 });
 </script>

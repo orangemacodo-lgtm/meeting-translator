@@ -1,0 +1,21 @@
+{
+  "name": "語音翻譯會議紀錄",
+  "short_name": "會議翻譯",
+  "description": "即時語音辨識與多語翻譯的網頁版會議紀錄工具",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "lang": "zh-TW",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
